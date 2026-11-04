@@ -3,17 +3,22 @@
 `uvicorn profile_rag.api.app:app` imports the `app` object below.
 
 The lifespan function runs once at startup (code before `yield`) and once at
-shutdown (code after `yield`). It owns long-lived resources such as the
-connection pool, so they are created once and closed cleanly.
+shutdown (code after `yield`). It owns long-lived resources, so they are
+created once and closed cleanly: the connection pool, and the answer chains
+with their search store (api/search.py). If the chains cannot be opened
+(Ollama, the chunk table, or the database is missing), the server does not
+start.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from profile_rag import tracing
-from profile_rag.api import health
+from profile_rag.api import routes
+from profile_rag.api.search import open_chains
 from profile_rag.db.pool import create_pool
 from profile_rag.settings import TracingSettings, get_settings
 
@@ -24,7 +29,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     pool = create_pool(str(settings.database_url))
     app.state.pool = pool
     try:
-        yield
+        # Blocking checks and queries: run them off the event loop.
+        opened = await asyncio.to_thread(open_chains, settings)
+        app.state.chains = opened.chains
+        try:
+            yield
+        finally:
+            await opened.close()
     finally:
         pool.close()
 
@@ -38,7 +49,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
-    app.include_router(health.router, prefix="/api")
+    app.include_router(routes.router, prefix="/api")
     return app
 
 

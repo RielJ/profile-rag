@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from profile_rag.db.pool import Pool
+from profile_rag.rag import ChainCache
 
 
 def get_pool(request: Request) -> Pool:
@@ -19,3 +20,12 @@ def get_pool(request: Request) -> Pool:
 
 
 PoolDep = Annotated[Pool, Depends(get_pool)]
+
+
+def get_chains(request: Request) -> ChainCache:
+    """Return the answer chains opened in the application's lifespan (api/search.py)."""
+    chains: ChainCache = request.app.state.chains
+    return chains
+
+
+ChainsDep = Annotated[ChainCache, Depends(get_chains)]

@@ -1,6 +1,6 @@
 # Architecture
 
-profile-rag answers questions about Riel's professional experience from a reviewed corpus. This page describes the indexing pipeline, the retrieval step, answer generation, the agent graph, tracing, the database tables, the corpus policy, and retrieval evaluation.
+profile-rag answers questions about Riel's professional experience from a reviewed corpus. This page describes the indexing pipeline, the retrieval step, answer generation, the agent graph, the API, tracing, the database tables, the corpus policy, and retrieval evaluation.
 
 ## Pipeline
 
@@ -92,7 +92,12 @@ All paths are under `backend/src/profile_rag/`.
 | `evaluation/agent_compare.py` | Runs a question set through the chain and the graph, scores both against the labels, and writes `docs/eval/agent-vs-chain-<set>-<model>.md`. |
 | `tracing.py` | `configure_tracing`: LangSmith tracing off by default, and the guards when it is on. |
 | `db/` | Connection pool and the migration runner for `db/migrations/`. |
-| `api/` | FastAPI application. `GET /api/health` reports database status. |
+| `rag.py` | `ask(question, chain, request_id=)`: runs the answer chain and maps its result or error to the API's `AskResponse`. `ChainCache` keeps one chain per mode and `k`. |
+| `api/models.py` | The API contract: `AskRequest`, the `AskResponse` union, `Citation`, and `SourceResponse`. |
+| `api/routes.py` | `POST /api/ask`, `GET /api/sources/{id}`, and the status code of each failure. |
+| `api/search.py` | `open_chains(settings)`: the startup checks and the search store behind `POST /api/ask`. |
+| `api/openapi.py` | Writes the OpenAPI schema to a file without starting a server, for `make types`. |
+| `api/` (other) | The FastAPI application and its lifespan (`app.py`), dependencies (`deps.py`), and `GET /api/health` (`health.py`). |
 | `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, `ask`, `agent`, `compare-agent`, `eval`, and `hnsw`. |
 
 ## Tables
@@ -340,12 +345,69 @@ The longest path has six steps: retrieve, grade, rewrite, retrieve, grade, gener
 
 The chain stays the default answer path. On the example set, the graph answered the same questions as the chain, with 36 Pi calls instead of 14. [`docs/eval/agent-decision.md`](eval/agent-decision.md) gives the numbers and says when to revisit the decision.
 
+## API
+
+The FastAPI application in `api/` serves three routes under `/api`. The request and response models in `api/models.py` are the contract. Every model forbids unknown fields.
+
+| Route | Does |
+| --- | --- |
+| `POST /api/ask` | Answers a question with the answer chain (`generation/chain.py`), as `profile-rag ask` does. The agent graph is not used ([`docs/eval/agent-decision.md`](eval/agent-decision.md)). |
+| `GET /api/sources/{id}` | Returns the metadata of one approved, visible source. |
+| `GET /api/health` | Reports the database: 200 when it answers, 503 when it does not. |
+
+### Startup
+
+The lifespan in `api/app.py` opens the connection pool, then calls `api/search.py`'s `open_chains` in a worker thread. `open_chains` runs the checks of `ask`: `PROFILE_RAG_API_MODEL` (default `nomic-v15`) names a model in `vectorstore/models.py`, Ollama has that model with the expected digest, and the model's chunk table exists. With tracing on, it also checks that the table holds exactly `corpus-example/`. If a check fails, the server does not start. It then opens the search store and builds the default chain, for `PROFILE_RAG_API_MODE` (default `hybrid`) and `PROFILE_RAG_API_K` (default 8). A request that sets `mode` or `k` gets the chain for that pair, which `rag.ChainCache` builds once and keeps. The routes get the cache through `Depends(get_chains)`; tests replace it with one built from a fake retriever and `FakeListChatModel`.
+
+`ask` and `get_source` are plain `def` functions, so FastAPI runs them in its thread pool. The Pi call (up to `PROFILE_RAG_PI_TIMEOUT_SECONDS`) blocks a worker thread, not the event loop.
+
+### Ask
+
+The request is `{"question": ..., "mode": ..., "k": ...}`. `question` must have 1 to 1000 characters and not be blank. `mode` (`dense`, `hybrid`, or `mmr`) and `k` (1 to 20) are optional. An invalid request returns 422 with FastAPI's validation body, and the chain does not run.
+
+The response is `AskResponse`, a `RootModel` over three variants with `status` as the discriminator:
+
+```text
+{"status": "answered", "answer": "...", "citations": [Citation, ...], "model": "provider/model" | null}
+{"status": "unknown", "reason": "...", "model": "provider/model" | null}
+{"status": "failed", "error": "<code>", "message": "...", "request_id": "..."}
+```
+
+`rag.ask` maps the chain's result and adds no logic of its own. A citation is `{chunk_id, source_id, source_title, url, attribution, excerpt}`, one per chunk the answer cites (`GroundedAnswer.cited_docs()`), in citation order. The values come from the chunk's metadata. `excerpt` is the chunk text with whitespace collapsed, cut at a word boundary to at most 280 characters. `url` is the source's `url` from `sources.yaml` when it is an `http://` or `https://` link, and null otherwise. Only approved chunks with visibility `public` or `sanitized` are retrieved, so a citation only names a source that may be shown.
+
+`model` is the `model_name` that the chat model puts in its reply's `response_metadata`: for `PiChatModel`, Pi's `provider/model`. A callback (`rag.ModelName`) reads it, so the chain does not change. It is null when no model ran (nothing was retrieved) or the model reported no name.
+
+### Failures and status codes
+
+A failed answer returns a 5xx status with the `failed` variant as its body. The status code says whose fault the failure is and whether a retry can help, for clients, proxies, and monitoring that look only at the status. The body is the same variant at every status, so the frontend reads `status` and `error` and needs no per-status parsing. `answered` and `unknown` are both successful answers and return 200.
+
+| `error` | HTTP | Raised by |
+| --- | --- | --- |
+| `retrieval_failed` | 503 | The search step: `EmbeddingError`, `ConnectionError` (Ollama unreachable), an `httpx` or Ollama error, or a psycopg or SQLAlchemy error |
+| `pi_timeout` | 504 | `PiTimeout` |
+| `pi_failed` | 502 | Any other `PiError` (`PiProcessError`, `PiProtocolError`, `PiModelError`) |
+| `bad_reply` | 502 | `OutputParserException`: the reply was not a valid answer |
+| `invented_citation` | 502 | `InventedCitation`: the reply cited a chunk it was not given |
+| `internal_error` | 500 | Any other exception: a bug |
+
+`message` is a fixed sentence per code (`rag.FAILURES`), written for a visitor. It never contains the error's own text: an `OutputParserException` holds the whole model reply, and a `PiProcessError` holds Pi's stderr. Every `POST /api/ask` response has an `X-Request-ID` header, and a `failed` body repeats it in `request_id`. The server logs one warning per failure, with the request ID, the exception class name, and the code, and no traceback, message, or reply text. `tests/test_api_contract.py` raises each error with a marker string in its message, reply, and stderr, and checks that the marker appears in no response and no log record.
+
+### Sources
+
+`GET /api/sources/{id}` returns `{id, kind, title, url, attribution, visibility, approved_at}` from the `sources` table. The table holds approved sources only (`corpus/sources_table.py`), and the query also requires visibility `public` or `sanitized`, the retrieval filter. An unknown, candidate, in-review, or rejected source returns 404, with the same body in each case. `url` follows the citation rule. `revision`, `content_sha256`, and `approved_by` are internal and are not returned, and neither is any source or chunk text: a visitor sees text only as a citation's excerpt.
+
+### Frontend types
+
+`make types` writes the OpenAPI schema to a temporary file with `python -m profile_rag.api.openapi` (no server runs) and turns it into `frontend/src/api/schema.d.ts` with openapi-typescript 7.13.0. `AskResponse` becomes a TypeScript union of the three variants, each with a literal `status`, so a `switch` on `status` narrows it (`frontend/src/api/schema.test.ts`). `make types-check` runs openapi-typescript with `--check` and fails when the file is out of date; `make lint` runs it first. The file is generated, so oxfmt and oxlint skip it.
+
+openapi-typescript 7 builds its output with the TypeScript compiler API, and its peer range is `typescript ^5.x`. TypeScript 7, which the frontend uses, has no JavaScript API: with it, openapi-typescript fails at startup (`ts.factory` is undefined). `frontend/.pnpmfile.cjs` removes the peer dependency and gives openapi-typescript its own TypeScript 5.9.3. The frontend's `tsc` stays on 7 and type-checks the generated file.
+
 ## Tracing
 
 `tracing.configure_tracing(settings, corpus_dir)` runs at startup: in the CLI's root callback, before any command, and in the API's `create_app`. Both run before any LangChain object is made.
 
 - Off by default. Tracing is on only with `LANGSMITH_TRACING=true` (environment or `.env`). When it is off, `configure_tracing` turns langsmith's global switch off. The other names the library reads, `LANGSMITH_TRACING_V2` and `LANGCHAIN_TRACING_V2`, then cannot turn it on.
-- Example corpus only. With tracing on, startup fails with exit code 2 unless the corpus directory is this repository's `corpus-example/` (`CORPUS_DIR` from the environment; unset means `corpus/`) and `LANGSMITH_API_KEY` is set. `search`, `ask`, `agent`, `eval`, and `compare-agent` also check that the model's table holds exactly the chunks of `corpus-example/`, because `CORPUS_DIR` alone says nothing about what was indexed.
+- Example corpus only. With tracing on, startup fails with exit code 2 unless the corpus directory is this repository's `corpus-example/` (`CORPUS_DIR` from the environment; unset means `corpus/`) and `LANGSMITH_API_KEY` is set. `search`, `ask`, `agent`, `eval`, `compare-agent`, and the API also check that the model's table holds exactly the chunks of `corpus-example/`, because `CORPUS_DIR` alone says nothing about what was indexed.
 - Nothing but structure. With tracing on, it sets `LANGSMITH_HIDE_INPUTS=true` and `LANGSMITH_HIDE_OUTPUTS=true`. It installs a `langsmith.Client` with `hide_inputs`, `hide_outputs`, and `hide_metadata` set to True, `omit_traced_runtime_info=True`, and an anonymizer, `scrub_error`, that replaces a run's error with the exception class name. A trace then holds run names, types, timings, and error class names.
 - Tests never trace. `tests/conftest.py` sets `LANGSMITH_TRACING=false` (an environment variable ranks above `.env`), removes the LangSmith API key and endpoint variables, and turns the global switch off before and after every test. The rule: a test run never traces, whatever the parent environment says. `tests/test_tracing.py` blocks every socket and gives the client a session that records requests instead of sending them.
 

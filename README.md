@@ -132,10 +132,54 @@ make backend    # API on http://127.0.0.1:8000 (OpenAPI UI at /docs)
 make frontend   # UI on http://127.0.0.1:5173
 ```
 
+The API needs what `ask` needs: the database, Ollama with the embedding model, the model's indexed table, and Pi. It checks the first three at startup and does not start if one is missing.
+
+## API
+
+`POST /api/ask` answers a question with the grounded answer chain, as `ask` does:
+
+```sh
+curl -s -X POST http://127.0.0.1:8000/api/ask \
+  -H 'content-type: application/json' \
+  -d '{"question": "What is lantern-queue and what is it built on?"}'
+```
+
+```json
+{
+  "status": "answered",
+  "answer": "According to its README, lantern-queue is a small job queue for Python applications that already use PostgreSQL. ...",
+  "citations": [
+    {
+      "chunk_id": "lantern-queue-readme:v2:6feb3ac202d2",
+      "source_id": "lantern-queue-readme",
+      "source_title": "lantern-queue README",
+      "url": "https://git.example.com/harborlight/lantern-queue",
+      "attribution": "project_doc",
+      "excerpt": "lantern-queue A small job queue for Python applications that already use PostgreSQL. ..."
+    }
+  ],
+  "model": "anthropic/claude-opus-5-5"
+}
+```
+
+The body takes `question` (1 to 1000 characters, not blank) and optionally `mode` (`dense`, `hybrid`, or `mmr`) and `k` (1 to 20). The defaults are `PROFILE_RAG_API_MODE` (`hybrid`) and `PROFILE_RAG_API_K` (`8`), over the embedding model `PROFILE_RAG_API_MODEL` (`nomic-v15`).
+
+The response's `status` is one of:
+
+| `status` | HTTP | Fields |
+| --- | --- | --- |
+| `answered` | 200 | `answer`, `citations`, `model` |
+| `unknown` | 200 | `reason`, `model` (null when nothing was retrieved) |
+| `failed` | 500, 502, 503, or 504 | `error`, `message`, `request_id` |
+
+An invalid body returns 422. `GET /api/sources/{id}` returns the metadata of an approved, visible source (never its text), or 404. `GET /api/health` reports the database. "API" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) lists the error codes and their status codes.
+
+The frontend's API types, `frontend/src/api/schema.d.ts`, are generated from the OpenAPI schema. After changing a route or a model in `backend/src/profile_rag/api/`, run `make types`. `make lint` fails while the file is out of date.
+
 ## Check the code
 
 ```sh
-make lint
+make lint       # includes make types-check
 make typecheck
 make test       # needs make db-up
 ```

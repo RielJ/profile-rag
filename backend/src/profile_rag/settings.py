@@ -7,6 +7,7 @@ clear error, instead of failing later in the middle of a request.
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,6 +47,15 @@ class Settings(BaseSettings):
     pi_timeout_seconds: float = Field(
         default=120.0, gt=0, validation_alias="PROFILE_RAG_PI_TIMEOUT_SECONDS"
     )
+
+    # The search behind `POST /api/ask` (api/search.py): the embedding model
+    # key (vectorstore/models.py), and the retriever mode and `k` used when a
+    # request does not set them. The modes are retrievers/factory.py's.
+    api_model: str = Field(default="nomic-v15", validation_alias="PROFILE_RAG_API_MODEL")
+    api_mode: Literal["dense", "hybrid", "mmr"] = Field(
+        default="hybrid", validation_alias="PROFILE_RAG_API_MODE"
+    )
+    api_k: int = Field(default=8, ge=1, le=20, validation_alias="PROFILE_RAG_API_K")
 
 
 @lru_cache

@@ -31,6 +31,10 @@ dependencies = [
     # Direct dependency of tracing.py, which relies on Client's anonymizer
     # reaching the run's error field. tests/test_tracing.py checks it.
     "langsmith>=0.14.15,<0.15",
+    # rag.py catches their exceptions as retrieval failures: httpx is what
+    # the ollama client raises, sqlalchemy is what langchain-postgres raises.
+    "httpx>=0.28.1,<0.29",
+    "sqlalchemy>=2.1.6,<3",
 ]
 
 # The `profile-rag` command-line entry point.

@@ -18,7 +18,7 @@ COMPOSE := docker compose
 
 .PHONY: help setup db-up db-down db-reset db-logs psql psql-test migrate index \
         backend frontend test test-backend test-frontend \
-        lint format typecheck check
+        lint format typecheck check types types-check
 
 help: ## List available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -78,7 +78,7 @@ test-backend: ## Run backend tests (needs `make db-up`)
 test-frontend: ## Run frontend unit tests
 	$(PNPM) test
 
-lint: ## Lint backend (ruff) and frontend (oxlint)
+lint: types-check ## Lint backend (ruff) and frontend (oxlint); check the API types
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
 	$(PNPM) lint
@@ -94,3 +94,24 @@ typecheck: ## Type-check backend (pyrefly) and frontend (tsc)
 	$(PNPM) typecheck
 
 check: lint typecheck test ## Lint, type-check, and test everything
+
+# --- API types ------------------------------------------------------------
+# The backend writes its OpenAPI schema to a temporary file (no server runs),
+# and openapi-typescript turns it into TypeScript types for the frontend.
+
+API_TYPES := $(ROOT)frontend/src/api/schema.d.ts
+
+# $(1): extra openapi-typescript flags.
+define openapi_ts
+	@tmp="$$(mktemp "$${TMPDIR:-/tmp}/profile-rag-openapi.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT; \
+	$(UV) run python -m profile_rag.api.openapi "$$tmp" && \
+	$(PNPM) exec openapi-typescript "$$tmp" --output "$(API_TYPES)" $(1)
+endef
+
+types: ## Regenerate frontend/src/api/schema.d.ts from the API's OpenAPI schema
+	$(call openapi_ts,)
+
+types-check: ## Fail if frontend/src/api/schema.d.ts is out of date (fix: make types)
+	$(call openapi_ts,--check) || \
+	{ echo "frontend/src/api/schema.d.ts is out of date. Run \`make types\`." >&2; exit 1; }

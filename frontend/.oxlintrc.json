@@ -11,5 +11,5 @@
     "react/exhaustive-deps": "warn",
     "react/only-export-components": ["warn", { "allowConstantExport": true }]
   },
-  "ignorePatterns": ["dist", "node_modules"]
+  "ignorePatterns": ["dist", "node_modules", "src/api/schema.d.ts"]
 }

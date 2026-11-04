@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 FAKE_PI = Path(__file__).resolve()
 
@@ -88,15 +89,15 @@ def reply_steps(text: str) -> list[Step]:
     ]
 
 
-def main() -> None:
-    script = json.loads(Path(sys.argv[1]).read_text())
+def read_command() -> dict[str, Any]:
+    """The one command line Pi reads from stdin, or {} if there is none."""
     line = sys.stdin.readline()
-    command = json.loads(line) if line.strip() else {}
-    if script["record"]:
-        pi_variables = {name: value for name, value in os.environ.items() if name.startswith("PI_")}
-        record = {"argv": sys.argv[2:], "command": command, "env": pi_variables}
-        Path(script["record"]).write_text(json.dumps(record))
-    for step in script["steps"]:
+    return json.loads(line) if line.strip() else {}
+
+
+def run_steps(command: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> None:
+    """Run the steps as described above, then wait for stdin to close."""
+    for step in steps:
         if "emit" in step:
             record = {k: command.get("id") if v == "$ID" else v for k, v in step["emit"].items()}
             sys.stdout.write(json.dumps(record) + "\n")
@@ -112,6 +113,16 @@ def main() -> None:
         elif "exit" in step:
             sys.exit(step["exit"])
     sys.stdin.read()  # Pi exits when stdin closes
+
+
+def main() -> None:
+    script = json.loads(Path(sys.argv[1]).read_text())
+    command = read_command()
+    if script["record"]:
+        pi_variables = {name: value for name, value in os.environ.items() if name.startswith("PI_")}
+        record = {"argv": sys.argv[2:], "command": command, "env": pi_variables}
+        Path(script["record"]).write_text(json.dumps(record))
+    run_steps(command, script["steps"])
 
 
 if __name__ == "__main__":

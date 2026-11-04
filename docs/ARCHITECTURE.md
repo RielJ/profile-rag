@@ -402,6 +402,68 @@ A failed answer returns a 5xx status with the `failed` variant as its body. The 
 
 openapi-typescript 7 builds its output with the TypeScript compiler API, and its peer range is `typescript ^5.x`. TypeScript 7, which the frontend uses, has no JavaScript API: with it, openapi-typescript fails at startup (`ts.factory` is undefined). `frontend/.pnpmfile.cjs` removes the peer dependency and gives openapi-typescript its own TypeScript 5.9.3. The frontend's `tsc` stays on 7 and type-checks the generated file.
 
+## Frontend
+
+The UI is one page (`frontend/src/App.tsx`): a question form, the result, and a server status line. It runs on React 19 and Vite, with no router, state library, or Markdown renderer.
+
+| File (under `frontend/src/`) | Does |
+| --- | --- |
+| `api/client.ts` | `ask(question, {mode, k, signal})` and `getSource(id)`. Returns a union and never throws. |
+| `components/AskForm.tsx` | The question box: label, 1000-character limit with a counter, trims the question, Enter submits, Shift+Enter adds a line, disabled and `aria-busy` while a question is in flight. |
+| `components/AnswerView.tsx` | Renders one `AskResult`. |
+| `components/EvidencePanel.tsx` | The numbered evidence list. |
+| `components/labels.ts` | Attribution labels, the `http(s)` URL check, and the evidence element ID. |
+
+### Client results
+
+`ask` checks the response at run time before it returns it, because the generated types say what the backend promises, not what arrives (a proxy's HTML error page, an old server). The check looks at the HTTP status and the body's `status` field, and checks each field the variant has. It uses no `as` cast. The result is one of:
+
+| Result | When |
+| --- | --- |
+| `response` with `answered` or `unknown` | HTTP 200 and a body of that shape |
+| `response` with `failed` | HTTP 5xx and a `failed` body with a known error code |
+| `invalid` | HTTP 422; only each error's `msg` is kept, never the `input` FastAPI echoes back |
+| `client_error` | `network`, `aborted`, `not_json`, `bad_shape` (wrong shape, or `failed` on 200, or `answered` on 5xx), or `unexpected_status` |
+
+### States and rendering rules
+
+`AnswerView` switches on the result kind and then on `status`. Each switch ends in `const unreachable: never = ...`, so a new variant in `schema.d.ts` fails `make typecheck` until the UI renders it. The attribution and client-error label maps use `satisfies Record<...>` for the same reason.
+
+- **Answered**: the answer text, then one marker per citation, `[1]` to `[n]` in citation order. Each marker is a link to `#evidence-<chunk_id>`, which works without JavaScript; a click also moves focus to that evidence item (`tabIndex=-1`), so keyboard and screen-reader position follow. The model name from the response is shown in a small line under the answer.
+- **Unknown**: headed "Not in the evidence", in a neutral box, with the reason. It is a normal outcome, not an error, so it uses no error color.
+- **Failed**: the server's `message` and `request_id`. The error code is not shown.
+- **Invalid** and **client error**: their own headings ("The question was not accepted", "Connection problem"), with the HTTP status and request ID when there was a response.
+
+A visually hidden `role="status"` (`aria-live="polite"`) region announces one short line per result, such as "Answer ready, with 2 evidence items.", rather than the whole evidence list. While a question is in flight, the result region is `aria-busy` and a newer question aborts the older request.
+
+Model and corpus text is always rendered as React text children, which React escapes. The frontend has no `dangerouslySetInnerHTML` and no Markdown-to-HTML step, so Markdown in an excerpt shows as its literal characters. A source title becomes a link only when `safeHttpUrl` accepts the URL as `http:` or `https:`; the API already nulls other URLs, and the check is repeated in the browser. Links carry `rel="noopener noreferrer"`. Tests: `AnswerView.test.tsx` renders HTML in the answer, title, excerpt, and reason, and checks that no element is created; it also checks that `javascript:`, `data:`, `file:`, relative, and malformed URLs never become links.
+
+The styles (`styles.css`) follow the system light or dark setting, keep a visible focus outline, use 16-pixel text in the question box so iOS does not zoom, and avoid sideways scrolling at 375 pixels. The only motion is a 150 ms press scale on the button and a background fade on the targeted evidence item; `prefers-reduced-motion: reduce` turns both off, and `prefers-contrast: more` darkens muted text and borders.
+
+### Tests
+
+The unit tests (`make test-frontend`, Vitest in jsdom) stub `fetch`. `client.test.ts` covers each result kind and the shape checks; `AskForm.test.tsx`, `AnswerView.test.tsx`, and `App.test.tsx` cover each state, the loading state, the length limit, the markers, and the text-only rendering.
+
+The browser tests (`make e2e`, Playwright and Chromium; `make e2e-install` once) cover an answered question (a marker click focuses and shows its evidence item), an unknown question, a failed answer, and a 375-pixel layout without sideways scrolling, each at desktop size and at phone size.
+
+### Test-mode server
+
+The browser tests need a running API, but not Ollama, not Pi, and not the real database. `backend/tests/e2e_server.py` provides one. It builds the app with `create_app(e2e_lifespan)`; the production lifespan is the default and is unchanged. The test lifespan:
+
+- creates a throwaway `profile_rag_tmp_<hex>` database on the `TEST_DATABASE_URL` server (`conftest.temporary_database`) and drops it at shutdown;
+- migrates it, syncs `corpus-example/sources.yaml` into `sources`, and indexes `corpus-example/` with `DeterministicFakeEmbedding` (hash-based vectors of the model's size);
+- answers with `PiChatModel` running `backend/tests/e2e_fake_pi.py`, which speaks Pi's RPC protocol, reads the prompt, and replies `unknown` to a question that contains "salary", fails with exit code 3 on a question that contains `E2E-FAIL`, and otherwise answers with the first two chunk IDs of the prompt, so the citations always pass `check_citations`.
+
+Safeguards against running it by accident or on real data:
+
+- It lives in `backend/tests/`, which is not part of the installed package. The production app has no setting that selects fake embeddings or a fake Pi.
+- It exits unless `PROFILE_RAG_TEST_MODE=1` is set. Only `frontend/playwright.config.ts` sets it.
+- It exits unless the database name starts with `profile_rag_tmp_`, checked again before it writes, so it can never write to the main database or the shared test database.
+- It never uses `DATABASE_URL`, `PROFILE_RAG_PI_BIN`, or `PROFILE_RAG_PI_MODEL`, and it loads `corpus-example/` whatever `CORPUS_DIR` says. Importing `conftest` turns LangSmith tracing off, as in every test. It listens on 127.0.0.1 only.
+- Playwright starts its own servers on ports 8765 and 5174 with `reuseExistingServer: false`, so a test never reaches a development server on 8000 or 5173.
+
+`backend/tests/test_e2e_server.py` checks the two refusals and the fake Pi's choice of reply.
+
 ## Tracing
 
 `tracing.configure_tracing(settings, corpus_dir)` runs at startup: in the CLI's root callback, before any command, and in the API's `create_app`. Both run before any LangChain object is made.

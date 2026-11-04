@@ -134,6 +134,15 @@ make frontend   # UI on http://127.0.0.1:5173
 
 The API needs what `ask` needs: the database, Ollama with the embedding model, the model's indexed table, and Pi. It checks the first three at startup and does not start if one is missing.
 
+Open http://127.0.0.1:5173 and type a question. Enter asks it; Shift+Enter adds a new line. Vite forwards every `/api` request to the API, so the browser talks to one origin. To use another API address, set `BACKEND_URL` (for example `BACKEND_URL=http://127.0.0.1:8001 make frontend`).
+
+The page shows one of these results:
+
+- **Answer**: the answer text, with numbered markers such as `[1]` that jump to the evidence item they cite, and the evidence list: source title (a link when the source has a public `http(s)` URL), who wrote it, and the excerpt. A small line names the model that answered.
+- **Not in the evidence**: the approved sources do not answer the question. The page gives the model's reason and no answer.
+- **No answer this time**: the server failed (for example, Pi timed out). The page shows the server's safe message and the request ID to look up in the server log.
+- **The question was not accepted** (HTTP 422) or **Connection problem** (no network, or a response the page cannot read).
+
 ## API
 
 `POST /api/ask` answers a question with the grounded answer chain, as `ask` does:
@@ -184,7 +193,23 @@ make typecheck
 make test       # needs make db-up
 ```
 
-The tests use fake embeddings, a fake chat model, and a fake Pi script, so they need no Ollama and no Pi. To also run the tests that call a real Ollama and a real Pi, run `uv --directory backend run pytest --live`. The Pi tests check the installed version and its flags, and make one model call.
+The tests use fake embeddings, a fake chat model, and a fake Pi script, so they need no Ollama and no Pi. The frontend tests (Vitest and Testing Library) run in jsdom with a stubbed `fetch`. To also run the tests that call a real Ollama and a real Pi, run `uv --directory backend run pytest --live`. The Pi tests check the installed version and its flags, and make one model call.
+
+### Browser tests
+
+The Playwright tests in `frontend/tests/e2e/` ask questions in Chromium, at desktop size and at 375 pixels wide. They are not part of `make test`, because they need a browser download. Once per machine, run:
+
+```sh
+make e2e-install   # downloads Playwright's Chromium (about 170 MB) to its cache
+```
+
+Then, with the database up (`make db-up`):
+
+```sh
+make e2e
+```
+
+`make e2e` starts its own API server on port 8765 and Vite on port 5174, and stops both at the end. The API server (`backend/tests/e2e_server.py`) runs the real routes and answer chain over `corpus-example/`, loaded into a throwaway database, with fake embeddings and a fake Pi. It needs no Ollama and no Pi, calls no model, sends no traces, and never uses `.env`'s database, `corpus/`, or the Pi settings. It refuses to start unless `PROFILE_RAG_TEST_MODE=1` is set (the Playwright config sets it) and unless its database is a throwaway `profile_rag_tmp_*` database. "Frontend" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the details.
 
 Run `make` with no arguments to list every command.
 
@@ -193,7 +218,7 @@ Run `make` with no arguments to list every command.
 | Path | Contents |
 | --- | --- |
 | `backend/` | FastAPI service and the `profile-rag` command-line tool (Python) |
-| `frontend/` | React UI (TypeScript, Vite) |
+| `frontend/` | React UI (TypeScript, Vite); browser tests in `frontend/tests/e2e/` |
 | `db/` | Database initialization and migrations |
 | `corpus/` | The real corpus. Git ignores everything except its README |
 | `corpus-example/` | A fictional corpus for tests and demos |

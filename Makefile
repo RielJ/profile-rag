@@ -18,7 +18,7 @@ COMPOSE := docker compose
 
 .PHONY: help setup db-up db-down db-reset db-logs psql psql-test migrate index \
         backend frontend test test-backend test-frontend \
-        lint format typecheck check types types-check
+        test-e2e e2e e2e-install lint format typecheck check types types-check
 
 help: ## List available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -77,6 +77,17 @@ test-backend: ## Run backend tests (needs `make db-up`)
 
 test-frontend: ## Run frontend unit tests
 	$(PNPM) test
+
+# Browser tests: kept out of `make test` because they need a downloaded
+# browser. They start their own API server (fake Pi, fake embeddings,
+# throwaway database; backend/tests/e2e_server.py) and Vite. Needs db-up.
+e2e-install: ## One-time: download the Chromium build Playwright uses
+	$(PNPM) exec playwright install chromium
+
+e2e: ## Run the Playwright browser tests (needs db-up and e2e-install)
+	$(PNPM) exec playwright test
+
+test-e2e: e2e
 
 lint: types-check ## Lint backend (ruff) and frontend (oxlint); check the API types
 	$(UV) run ruff check .

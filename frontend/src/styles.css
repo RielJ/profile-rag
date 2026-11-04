@@ -1,0 +1,378 @@
+/* Plain, readable, one accent. Light and dark follow the system setting. */
+
+:root {
+  color-scheme: light dark;
+  --bg: oklch(98.5% 0.004 90);
+  --surface: oklch(95.5% 0.006 90);
+  --border: oklch(84% 0.008 90);
+  --text: oklch(22% 0.01 260);
+  --muted: oklch(44% 0.012 260);
+  --accent: oklch(47% 0.13 255);
+  --accent-text: oklch(99% 0 0);
+  --problem: oklch(52% 0.15 35);
+  --target: oklch(93% 0.05 255);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 100%;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: oklch(19% 0.008 260);
+    --surface: oklch(24% 0.01 260);
+    --border: oklch(38% 0.012 260);
+    --text: oklch(93% 0.006 90);
+    --muted: oklch(74% 0.01 260);
+    --accent: oklch(74% 0.11 255);
+    --accent-text: oklch(18% 0.02 260);
+    --problem: oklch(74% 0.12 40);
+    --target: oklch(30% 0.05 255);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+::selection {
+  background: var(--target);
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.15em;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2 {
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: 1.75rem;
+  letter-spacing: -0.015em;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.125rem;
+  margin: 0 0 0.5rem;
+}
+
+p {
+  margin: 0 0 0.75rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.page {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 2.5rem 1rem 2rem;
+}
+
+.intro p {
+  color: var(--muted);
+  max-width: 38rem;
+}
+
+/* --- Ask form ------------------------------------------------------------ */
+
+.ask-form {
+  margin: 1.5rem 0;
+}
+
+.ask-form label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.375rem;
+}
+
+.ask-form textarea {
+  display: block;
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.625rem 0.75rem;
+  font: inherit;
+  font-size: 1rem; /* 16px or more: iOS does not zoom on focus */
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.ask-form textarea:focus-visible {
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+
+.ask-form textarea:read-only {
+  color: var(--muted);
+}
+
+.ask-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-top: 0.5rem;
+}
+
+.counter {
+  margin: 0;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.counter-near {
+  color: var(--problem);
+}
+
+.hint {
+  margin: 0.375rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+@media (hover: none) {
+  .hint {
+    display: none; /* no physical keyboard to press Enter on */
+  }
+}
+
+button {
+  min-height: 2.75rem;
+  min-width: 6rem;
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 150ms var(--ease-out);
+}
+
+button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* --- Result ----------------------------------------------------------------- */
+
+.result {
+  margin-top: 1.5rem;
+}
+
+.pending {
+  color: var(--muted);
+}
+
+.answer-text {
+  font-size: 1.0625rem;
+  white-space: pre-line; /* keep the model's line breaks; still plain text */
+  overflow-wrap: anywhere;
+}
+
+.marker {
+  display: inline-block;
+  min-width: 1.75rem;
+  padding: 0.125rem 0.125rem;
+  margin-left: 0.125rem;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-decoration: none;
+  border-radius: 4px;
+}
+
+.marker:hover {
+  text-decoration: underline;
+}
+
+.model-line {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.model-name {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.notice {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.notice p:last-child,
+.notice ul:last-child {
+  margin-bottom: 0;
+}
+
+.notice-problem {
+  border-color: var(--problem);
+}
+
+.notice-problem h2 {
+  color: var(--problem);
+}
+
+.reason {
+  overflow-wrap: anywhere;
+}
+
+.reason-label {
+  font-weight: 600;
+}
+
+.request-id {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+/* --- Evidence ---------------------------------------------------------------- */
+
+.evidence {
+  margin-top: 2rem;
+}
+
+.evidence ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.evidence li {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: 0.5rem;
+  padding: 0.75rem 0.5rem;
+  margin: 0 -0.5rem;
+  border-top: 1px solid var(--border);
+  border-radius: 6px;
+  scroll-margin-top: 1rem;
+  transition: background-color 150ms ease;
+}
+
+.evidence li:target,
+.evidence li:focus {
+  background: var(--target);
+}
+
+.evidence li:focus {
+  outline: none; /* the background shows the focused item */
+}
+
+.evidence li:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.evidence-number {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.evidence-title {
+  font-weight: 600;
+  margin-bottom: 0.125rem;
+  overflow-wrap: anywhere;
+}
+
+.evidence-attribution {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-bottom: 0.375rem;
+}
+
+.evidence-excerpt {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+/* --- Footer ------------------------------------------------------------------ */
+
+footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.health {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .evidence li {
+    transition: none;
+  }
+
+  button:not(:disabled):active {
+    transform: none;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: var(--text);
+    --border: var(--text);
+  }
+}

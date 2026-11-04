@@ -11,8 +11,8 @@ start.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -40,14 +40,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         pool.close()
 
 
-def create_app() -> FastAPI:
+Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
+
+
+def create_app(app_lifespan: Lifespan = lifespan) -> FastAPI:
+    """The application. Only the e2e test server (tests/e2e_server.py) passes its own lifespan."""
     # Before any LangChain object is made. Raises TracingRefused, which stops
     # the server from starting, if LANGSMITH_TRACING=true outside corpus-example.
     tracing.configure_tracing(TracingSettings(), tracing.corpus_dir_from_env())
     app = FastAPI(
         title="profile-rag",
         version="0.1.0",
-        lifespan=lifespan,
+        lifespan=app_lifespan,
     )
     app.include_router(routes.router, prefix="/api")
     return app

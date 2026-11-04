@@ -1,0 +1,77 @@
+[project]
+name = "profile-rag"
+version = "0.1.0"
+description = "Question answering over reviewed professional-experience evidence."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi>=0.162,<0.163",
+    "uvicorn[standard]>=0.54,<0.55",
+    "pydantic>=2.14,<3",
+    "pydantic-settings>=2.16,<3",
+    "psycopg[binary]>=3.3,<3.4",
+    "psycopg-pool>=3.3,<3.4",
+    "typer>=0.27,<0.28",
+    "pyyaml>=6.0,<7",
+    "httpx2>=2.16,<3",
+    # Every langchain-postgres release requires pgvector<0.4. In 0.3.6, `Vector`
+    # lives in pgvector.utils and psycopg reads `vector` values as NumPy arrays.
+    "pgvector==0.3.6",
+    "numpy>=2.5,<3",
+    "langchain-core>=1.7,<1.8",
+    "langchain-text-splitters>=1.1,<1.2",
+    "langchain-ollama>=1.1,<1.2",
+    # Pre-1.0, and its API changes between releases: pinned exactly.
+    "langchain-postgres==0.0.19",
+    # For SQLRecordManager only. index() itself is in langchain-core.
+    "langchain-classic>=1.0,<1.1",
+]
+
+# The `profile-rag` command-line entry point.
+[project.scripts]
+profile-rag = "profile_rag.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2,<10",
+    # Starlette's TestClient now uses httpx2 (Pydantic's successor to httpx).
+    "httpx2>=2.16,<3",
+    "ruff>=0.17,<0.18",
+    "pyrefly>=1.4,<1.5",
+    "types-pyyaml>=6.0,<7",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+required-version = ">=0.13.6"
+
+# --- Tools ---------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# E/F: pyflakes and pycodestyle errors; I: import order; B: likely bugs;
+# UP: modern syntax; SIM: simplifications; RUF: ruff-specific checks;
+# ANN: missing annotations, so the editor flags them before Pyrefly strict does.
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ANN"]
+
+# Pyrefly is the only type checker: `make typecheck` and the editor LSP both
+# run the version pinned above, so they report the same errors.
+[tool.pyrefly]
+project-includes = ["src", "tests"]
+preset = "strict"
+python-interpreter-path = ".venv/bin/python"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q and --no-header drop the session banner; --tb=short prints one line per
+# frame instead of library source; -ra still lists every non-pass at the end.
+addopts = ["--strict-markers", "-ra", "-q", "--no-header", "--tb=short"]
+markers = [
+    "live: calls a real external service (Ollama or Pi); skipped unless --live is given",
+]

@@ -1,0 +1,33 @@
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Real corpus and evaluation data. The repository is public; only the
+# README in each folder is committed. See docs/ARCHITECTURE.md, "Corpus policy".
+/corpus/*
+!/corpus/README.md
+/eval/*
+!/eval/README.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/

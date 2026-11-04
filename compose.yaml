@@ -1,0 +1,31 @@
+# Local Postgres with the pgvector extension.
+#
+# - The image tag pins pgvector 0.8.7 on PostgreSQL 18 (Debian trixie).
+# - The port is bound to 127.0.0.1 only, so other machines on your
+#   network cannot connect.
+# - Data lives in the named volume `pgdata` and survives `docker compose down`.
+#   `make db-reset` deletes it.
+# - Files in db/init/ run once, when the volume is first created.
+
+name: profile-rag-app
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    environment:
+      POSTGRES_USER: profile_rag
+      POSTGRES_PASSWORD: profile_rag
+      POSTGRES_DB: profile_rag
+    ports:
+      - "127.0.0.1:5443:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U profile_rag -d profile_rag"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

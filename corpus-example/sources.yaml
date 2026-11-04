@@ -1,0 +1,65 @@
+# Example corpus registry for a fictional person, Dana Whitlock.
+# Every name, company, URL, and address here is invented. Tests and the demo
+# use this folder; the real corpus lives in corpus/ and is never committed.
+# Format: backend/src/profile_rag/corpus/registry.py.
+#
+# A SHA-256 hex digest is 64 characters, so `content_sha256:` lines are 84.
+# yamllint disable rule:line-length
+sources:
+  - id: resume-2026
+    kind: resume
+    title: Resume (2026)
+    attribution: self_report
+    visibility: public
+    state: approved
+    url: https://example.com/dana/resume
+    path: approved/resume-2026.md
+    revision: "2026-09-30"
+    content_sha256: 86e82c5bb20bb10adc8f788abe2adf98c69d1d86306d957fac446164bb4bfd80
+    approved_at: 2026-10-01 09:00:00+00:00
+    approved_by: dana
+    notes: The contact email is a public, role-only address, kept on purpose.
+
+  - id: lantern-queue-readme
+    kind: github
+    title: lantern-queue README
+    attribution: project_doc
+    visibility: public
+    state: approved
+    url: https://git.example.com/harborlight/lantern-queue
+    path: approved/lantern-queue-readme.md
+    revision: 3f9a1c2e7b4d5a6f8e0c1b2a3d4e5f60718293a4
+    content_sha256: b046b1f5507efb88bdc0754d533a4d8a6a89e812a7171930ec965768a27c579a
+    approved_at: 2026-10-01 09:10:00+00:00
+    approved_by: dana
+    notes: Maintained by a team, so project_doc, not self_authored.
+
+  - id: blog-postgres-queues
+    kind: blog
+    title: Why we moved our job queue into PostgreSQL
+    attribution: self_authored
+    visibility: public
+    state: approved
+    url: https://example.com/dana/blog/postgres-queues
+    path: approved/blog-postgres-queues.md
+    revision: "2026-08-14"
+    content_sha256: dc868ed9f9a0eb2ac60e39da422c02db1651194e2c39ddff0c83a391b9beec9a
+    approved_at: 2026-10-01 09:20:00+00:00
+    approved_by: dana
+
+  - id: linkedin-experience
+    kind: linkedin
+    title: LinkedIn experience section
+    attribution: self_report
+    visibility: public
+    state: candidate
+    url: https://example.com/in/dana-whitlock
+    notes: Copy the text by hand into approved/; do not scrape.
+
+  - id: note-harborlight-migration
+    kind: note
+    title: Notes on the Harborlight queue migration
+    attribution: self_authored
+    visibility: sanitized
+    state: rejected
+    rejection_reason: Names a client and an internal incident; not sanitized.

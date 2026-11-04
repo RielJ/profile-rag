@@ -1,0 +1,6 @@
+{
+  "language": "postgresql",
+  "paramTypes": {
+    "custom": [{ "regex": "\\\\[a-zA-Z]+[^\\n]*" }]
+  }
+}

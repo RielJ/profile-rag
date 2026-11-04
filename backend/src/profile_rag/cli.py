@@ -49,6 +49,18 @@ between the question and the chunk, the `chunk_id`, and the heading path.
 The distance is the same measure in every mode, so it shows where MMR and
 hybrid search leave the dense order. It is not the score a mode ranks by.
 
+Answer a question:
+
+    profile-rag ask "QUESTION" [--model nomic-v15] [--mode dense|hybrid|mmr] [-k 8]
+
+It retrieves k chunks as `search` does, then runs the grounded answer chain
+(generation/chain.py) through Pi (generation/pi_rpc.py, settings PROFILE_RAG_PI_BIN,
+PROFILE_RAG_PI_MODEL, PROFILE_RAG_PI_TIMEOUT_SECONDS). It prints the answer and each cited chunk
+with its source title and attribution, or `Unknown.` and the reason. Exit
+codes: 0 answered or unknown, 2 setup error, 3 Pi failed, 4 the model's
+reply was rejected (not a valid answer, or a citation of a chunk it was not
+given). Error messages never contain the model's reply.
+
 Evaluate retrieval:
 
     profile-rag eval --set dev|heldout|example [--model nomic-v15] [--mode dense|hybrid|mmr] [-k 8]
@@ -76,6 +88,8 @@ import ollama
 import psycopg
 import typer
 from langchain_core.documents import Document
+from langchain_core.exceptions import OutputParserException
+from langchain_core.language_models import BaseChatModel
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGEngine, PGVectorStore
 from pydantic import ValidationError
@@ -102,8 +116,12 @@ from profile_rag.evaluation import ann_compare
 from profile_rag.evaluation.labels import ResolvedQuestion, resolve_labels
 from profile_rag.evaluation.questions import QuestionFileError, load_questions
 from profile_rag.evaluation.runner import RunConfig, run_evaluation
+from profile_rag.generation.answer import InventedCitation, Unknown
+from profile_rag.generation.chain import GroundedAnswer, build_chain
+from profile_rag.generation.pi_chat_model import PiChatModel
+from profile_rag.generation.pi_rpc import PiConfig, PiError, PiProcessError, PiTimeout
 from profile_rag.retrievers.factory import SearchMode, build_retriever, dense_candidates
-from profile_rag.settings import REPO_ROOT, get_settings
+from profile_rag.settings import REPO_ROOT, Settings, get_settings
 from profile_rag.vectorstore import hnsw, indexing, store
 from profile_rag.vectorstore.models import DEFAULT_MODEL, MODELS, EmbeddingModel
 from profile_rag.vectorstore.prefixed import EmbeddingError, PrefixedEmbeddings
@@ -752,6 +770,114 @@ def search_command(
         heading_path: list[str] = chunk.metadata.get("heading_path") or []
         path = " > ".join(heading_path) or "(before the first heading)"
         typer.echo(f"{rank:>4}  {distance:>8.4f}  {chunk.metadata['chunk_id']}  {path}")
+
+
+# --- ask ----------------------------------------------------------------------
+#
+# Exit codes: 0 answered or unknown, 2 setup error (the `_fail` code),
+# 3 Pi failed, 4 the model's reply was rejected. A message never contains the
+# model's reply: an OutputParserException's text does, so it is not printed.
+
+EXIT_PI_FAILED = 3
+EXIT_REPLY_REJECTED = 4
+
+
+def _pi_model(settings: Settings) -> BaseChatModel:
+    """The Pi chat model from the settings. Tests replace this function."""
+    config = PiConfig(
+        model=settings.pi_model,
+        executable=(settings.pi_bin,),
+        timeout=settings.pi_timeout_seconds,
+    )
+    return PiChatModel(config=config)
+
+
+def _ask_failure(message: str, code: int) -> NoReturn:
+    typer.echo(f"error: {message}", err=True)
+    raise typer.Exit(code)
+
+
+def _describe_pi_error(error: PiError) -> str:
+    if isinstance(error, PiTimeout):
+        return f"{error} (set PROFILE_RAG_PI_TIMEOUT_SECONDS in .env to wait longer)."
+    if isinstance(error, PiProcessError):
+        lines = [str(error)]
+        if error.returncode is None:
+            lines.append("Install Pi, or set PROFILE_RAG_PI_BIN in .env to its path.")
+        if error.stderr_tail:
+            lines.append("Pi's stderr ends with:")
+            lines.extend(f"  {line}" for line in error.stderr_tail.splitlines()[-10:])
+        return "\n".join(lines)
+    return str(error)
+
+
+@app.command("ask")
+def ask_command(
+    question: Annotated[str, typer.Argument(help="The question, in quotes.")],
+    model_key: Annotated[
+        str,
+        typer.Option("--model", help=f"Embedding model, one of: {', '.join(MODELS)}."),
+    ] = DEFAULT_MODEL,
+    mode: Annotated[SearchMode, typer.Option(help="Which retriever to run.")] = "hybrid",
+    k: Annotated[int, typer.Option("-k", min=1, help="How many chunks to give the model.")] = 8,
+    ef_search: EfSearchOption = None,
+) -> None:
+    """Answer a question from the indexed evidence, through Pi, with citations."""
+    if not question.strip():
+        _fail("the question is empty.")
+    model = MODELS.get(model_key)
+    if model is None:
+        _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
+    settings = get_settings()
+    database_url = str(settings.database_url)
+    _check_model(model, settings.ollama_url)
+    if not store.table_exists(database_url, model.table_name):
+        _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+
+    _warn_low_ef_search(ef_search, mode, k)
+    embeddings = _embeddings(model, settings.ollama_url)
+    engine = PGEngine.from_connection_string(url=database_url)
+    try:
+        search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
+        retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
+        chain = build_chain(retriever, _pi_model(settings))
+        try:
+            result = chain.invoke({"question": question})
+        except EmbeddingError as error:
+            _fail(f"the question: {error.reason}")
+        except PiError as error:
+            _ask_failure(_describe_pi_error(error), EXIT_PI_FAILED)
+        except OutputParserException:
+            _ask_failure(
+                "the model's reply is not a valid answer (not JSON of the required shape).",
+                EXIT_REPLY_REJECTED,
+            )
+        except InventedCitation as error:
+            _ask_failure(
+                f"the model cited chunks it was not given: {', '.join(error.invented)}.",
+                EXIT_REPLY_REJECTED,
+            )
+    finally:
+        asyncio.run(engine.close())
+
+    _print_answer(result)
+
+
+def _print_answer(result: GroundedAnswer) -> None:
+    answer = result.answer.root
+    if isinstance(answer, Unknown):
+        typer.echo("Unknown.")
+        typer.echo(f"Reason: {answer.reason}")
+        typer.echo(f"({len(result.docs)} chunks retrieved)")
+        return
+    typer.echo(answer.answer)
+    typer.echo("\nCitations:")
+    for doc in result.cited_docs():
+        metadata = doc.metadata
+        typer.echo(
+            f"  {metadata['chunk_id']}  {metadata.get('title', '?')}"
+            f" ({metadata.get('attribution', '?')})"
+        )
 
 
 # --- eval ---------------------------------------------------------------------

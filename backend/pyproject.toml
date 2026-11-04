@@ -64,6 +64,8 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ANN"]
 # run the version pinned above, so they report the same errors.
 [tool.pyrefly]
 project-includes = ["src", "tests"]
+# tests/ too, so test modules can import helpers such as tests/fake_pi.py.
+search-path = ["src", "tests"]
 preset = "strict"
 python-interpreter-path = ".venv/bin/python"
 

@@ -2,7 +2,7 @@
 
 A question-answering application about Riel's professional experience. It answers only from a reviewed corpus of sources, and each answer cites its sources.
 
-The backend indexes approved sources into Postgres with pgvector, through LangChain and local Ollama embeddings. Each chunk's text starts with its heading path, so headings such as job titles are searchable. It retrieves chunks with dense, MMR, or hybrid (dense plus keyword) search, and measures retrieval with recall@k and MRR on labeled question sets. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the pipeline, the modules, the tables, and the corpus policy.
+The backend indexes approved sources into Postgres with pgvector, through LangChain and local Ollama embeddings. Each chunk's text starts with its heading path, so headings such as job titles are searchable. It retrieves chunks with dense, MMR, or hybrid (dense plus keyword) search, and measures retrieval with recall@k and MRR on labeled question sets. It answers a question by giving the retrieved chunks to a model through [Pi](https://pi.dev), and checks that every citation is a retrieved chunk. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the pipeline, the modules, the tables, and the corpus policy.
 
 ## Requirements
 
@@ -13,6 +13,7 @@ The backend indexes approved sources into Postgres with pgvector, through LangCh
 | Node | 26 LTS | Runs the frontend. `.node-version` pins it (`fnm install 26`) |
 | pnpm | 12.16.1 | Installs the frontend dependencies |
 | Ollama | Recent | Computes embeddings on the host |
+| Pi | 1.5.0 (tested) | Runs the answer model for `profile-rag ask`, with credentials for the model's provider |
 
 ## Set up
 
@@ -61,6 +62,27 @@ To add an HNSW index for approximate dense search, run `profile-rag hnsw apply -
 
 After a splitter change (a new `SPLITTER_VERSION` in `backend/src/profile_rag/corpus/splitting.py`), run `make index` again for each model and corpus. Every chunk ID changes, so the command replaces every row and reports them as added and deleted.
 
+## Ask a question
+
+`profile-rag ask` retrieves chunks as `search` does, gives them to the answer model, and prints the answer with its citations:
+
+```sh
+uv --directory backend run profile-rag ask "What web framework did Dana use for the shipment-tracking API?" --mode hybrid -k 8
+```
+
+```text
+According to Dana's resume, Dana built the shipment-tracking API at Copperfield Logistics (2020 to 2023) in FastAPI. ...
+
+Citations:
+  resume-2026:v2:5e5d454a1736  Resume (2026) (self_report)
+```
+
+When the evidence does not answer the question, the command prints `Unknown.` and the reason. `--mode` defaults to `hybrid`; `--model` and `-k` work as in `search`.
+
+The model runs through Pi, as a separate `pi --mode rpc` process for each question. Set `PROFILE_RAG_PI_MODEL` in `.env` (default `anthropic/claude-opus-5-5`), and `PROFILE_RAG_PI_BIN` if `pi` is not on `PATH`. Pi must have credentials for the model's provider (`pi` then `/login`, or the provider's API key variable).
+
+Exit codes: 0 for an answer or `Unknown.`, 2 for a setup error (no table, Ollama not running), 3 when Pi fails (timeout, crash, or provider error), and 4 when the model's reply is rejected (not valid JSON of the answer shape, or a citation of a chunk it was not given). Error messages never include the model's reply. "Generation" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the prompt, the answer format, and how Pi is isolated.
+
 ## Evaluate retrieval
 
 `profile-rag eval` runs a labeled question set through a retriever and reports recall@k and MRR:
@@ -92,7 +114,7 @@ make typecheck
 make test       # needs make db-up
 ```
 
-The tests use fake embeddings and need no Ollama. To also run the tests that call a real Ollama, run `uv --directory backend run pytest --live`.
+The tests use fake embeddings, a fake chat model, and a fake Pi script, so they need no Ollama and no Pi. To also run the tests that call a real Ollama and a real Pi, run `uv --directory backend run pytest --live`. The Pi tests check the installed version and its flags, and make one model call.
 
 Run `make` with no arguments to list every command.
 
@@ -112,3 +134,5 @@ Run `make` with no arguments to list every command.
 ## Privacy
 
 This repository is public. The real corpus and evaluation data are never committed. See "Corpus policy" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+`profile-rag ask` sends the question and the retrieved chunks to the model provider that `PROFILE_RAG_PI_MODEL` names. Pi runs without session files, so it does not store them under `~/.pi`. See "Pi isolation" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

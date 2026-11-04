@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     # The local Ollama server that computes embeddings.
     ollama_url: str = "http://127.0.0.1:11434"
 
+    # Pi, which runs the answer model (generation/pi_rpc.py). `pi_bin` is a
+    # command name on PATH or a path to the executable. The variables have a
+    # PROFILE_RAG_ prefix because Pi itself exports PI_MODEL, PI_PROVIDER, and
+    # others to every command it runs. Unprefixed, a `profile-rag ask` started
+    # from a Pi shell would take the parent session's model over .env.
+    pi_bin: str = Field(default="pi", validation_alias="PROFILE_RAG_PI_BIN")
+    pi_model: str = Field(
+        default="anthropic/claude-opus-5-5", validation_alias="PROFILE_RAG_PI_MODEL"
+    )
+    pi_timeout_seconds: float = Field(
+        default=120.0, gt=0, validation_alias="PROFILE_RAG_PI_TIMEOUT_SECONDS"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

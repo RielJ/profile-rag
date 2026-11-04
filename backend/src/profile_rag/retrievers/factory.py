@@ -13,6 +13,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_postgres import PGVectorStore
 
 from profile_rag.retrievers import dense, hybrid
+from profile_rag.vectorstore.models import EmbeddingModel
 
 SearchMode = Literal["dense", "hybrid", "mmr"]
 
@@ -22,11 +23,15 @@ CANDIDATES = 20
 MMR_LAMBDA = 0.5
 
 
-def build_retriever(mode: SearchMode, store: PGVectorStore, k: int) -> BaseRetriever:
+def build_retriever(
+    mode: SearchMode, store: PGVectorStore, k: int, *, conninfo: str, model: EmbeddingModel
+) -> BaseRetriever:
     """The retriever for `mode` on `store`, returning at most `k` visible chunks.
 
-    `store` is opened for search (`vectorstore.store.open_search_store`).
-    Every mode applies the `dense.VISIBLE` filter.
+    `store` is `model`'s table, opened for search
+    (`vectorstore.store.open_search_store`). Hybrid mode also reads that
+    table with plain SQL through `conninfo`. Every mode applies the
+    `dense.VISIBLE` filter.
     """
     candidates = max(CANDIDATES, k)
     if mode == "dense":
@@ -37,6 +42,8 @@ def build_retriever(mode: SearchMode, store: PGVectorStore, k: int) -> BaseRetri
         )
     return hybrid.HybridRetriever(
         store=store,
+        conninfo=conninfo,
+        model=model,
         k=k,
         k_dense=candidates,
         k_keyword=candidates,

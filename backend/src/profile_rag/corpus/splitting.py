@@ -13,6 +13,17 @@ steps:
 `chunk_words` is a maximum, not a size every chunk is filled up to. A short
 section stays one short chunk.
 
+Headings are words a question may use ("What did Dana do at Acme?"), but a
+chunk's body rarely repeats them. So each chunk's text starts with its
+heading path on one line, then a blank line, then the body:
+
+    Dana Whitlock > Experience > Staff Engineer, Acme
+
+    - Led the migration of four services ...
+
+Embedding and keyword search both see that line. `heading_path` stays in the
+metadata too, and `chunk_body` returns the text without the line.
+
 Each chunk gets a `chunk_id` that stays the same while its source, its
 headings, and its text stay the same. Indexing uses it to update only the
 chunks that changed.
@@ -31,7 +42,13 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 # made by different rules never share an ID. Change it whenever
 # `split_documents` would return different chunks for the same documents and
 # the same sizes (a new rule or a new splitter setting, not a size change).
-SPLITTER_VERSION = "v1"
+#
+# v1: chunk text was the body only.
+# v2: chunk text starts with the heading path line (`heading_line`).
+SPLITTER_VERSION = "v2"
+
+# Joins the headings of a path on the first line of a chunk.
+HEADING_SEPARATOR = " > "
 
 # Sizes used by `profile-rag chunks show` unless you pass others. Read your
 # own chunks and adjust.
@@ -49,13 +66,47 @@ def count_words(text: str) -> int:
     return len(text.split())
 
 
+def heading_line(heading_path: list[str]) -> str:
+    """The first line of a chunk under `heading_path`: the headings joined by " > ".
+
+    An empty path (text before the first heading) gives "".
+    """
+    return HEADING_SEPARATOR.join(heading_path)
+
+
+def chunk_text(heading_path: list[str], body: str) -> str:
+    """The text of a chunk: its heading line, a blank line, then `body`.
+
+    With an empty heading path the text is `body` alone.
+    """
+    line = heading_line(heading_path)
+    return f"{line}\n\n{body}" if line else body
+
+
+def chunk_body(chunk: Document) -> str:
+    """The chunk's text without the heading line that `chunk_text` put first.
+
+    Reads `heading_path` from the metadata. Raises ValueError if the text
+    does not start with that path's line, which means the chunk was not made
+    by this splitter version.
+    """
+    line = heading_line(chunk.metadata["heading_path"])
+    if not line:
+        return chunk.page_content
+    prefix = f"{line}\n\n"
+    if not chunk.page_content.startswith(prefix):
+        raise ValueError(f"chunk {chunk.metadata.get('chunk_id')} does not start with its headings")
+    return chunk.page_content.removeprefix(prefix)
+
+
 def chunk_id(source_id: str, heading_path: list[str], text: str) -> str:
     """The ID of a chunk, before duplicates are numbered.
 
     The format is `<source_id>:<SPLITTER_VERSION>:<hash>`, where `<hash>` is
     the first 12 lowercase hex characters of a SHA-256 over the heading path
-    and the text together. The same three inputs always give the same ID. A
-    different heading path or a different text gives a different ID.
+    and the text together. `text` is the body, without the heading line.
+    The same three inputs always give the same ID. A different heading path
+    or a different text gives a different ID.
     """
     hash = hashlib.sha256(bytes(json.dumps([heading_path, text]), "utf-8")).hexdigest()[:12]
     return f"{source_id}:{SPLITTER_VERSION}:{hash}"
@@ -76,20 +127,23 @@ def split_documents(
 
     1. Headings. Lines starting with `#` to `######` and a space are headings,
        except inside ``` or ~~~ fenced code. Heading lines are not part of any
-       chunk's text. Text before the first heading is a section too.
+       chunk's body. Text before the first heading is a section too.
     2. Size. Each section is split with `RecursiveCharacterTextSplitter`, using
        `chunk_words` as `chunk_size`, `overlap_words` as `chunk_overlap`, and
        `count_words` as `length_function`. Keep the other settings at their
-       defaults. No chunk has more than `chunk_words` words. Chunks of
-       different sections never overlap.
-    3. Metadata. Each chunk's metadata is a copy of its source Document's
+       defaults. No chunk body has more than `chunk_words` words; the
+       heading line comes on top. Chunks of different sections never
+       overlap.
+    3. Text. Each chunk's `page_content` is `chunk_text(heading_path, body)`:
+       the heading line, a blank line, then the body. `chunk_body` undoes it.
+    4. Metadata. Each chunk's metadata is a copy of its source Document's
        metadata plus exactly three keys:
        - `heading_path`: a list of the heading texts above the chunk,
          outermost first. `# A` then `### C` gives `["A", "C"]`; a following
          `## D` gives `["A", "D"]`. Text before the first heading has `[]`.
        - `ordinal`: the chunk's position within its source, from 0. It is
          for reading only; the ID does not use it.
-       - `chunk_id`: `chunk_id(source_id, heading_path, page_content)`. The
+       - `chunk_id`: `chunk_id(source_id, heading_path, body)`. The
          second chunk of a source with that same ID gets `:2` appended, the
          third `:3`, and so on, so IDs are unique within a source.
        The chunk's `Document.id` is the same `chunk_id`. No other keys are
@@ -129,6 +183,7 @@ def split_documents(
         for ordinal, chunk in enumerate(rec_splitter.split_documents(sections)):
             path = [chunk.metadata.pop(key) for _, key in headers if key in chunk.metadata]
             base = chunk_id(doc.metadata["source_id"], path, chunk.page_content)
+            chunk.page_content = chunk_text(path, chunk.page_content)
             seen[base] += 1
             cid = base if seen[base] == 1 else f"{base}:{seen[base]}"
             chunk.metadata |= {"chunk_id": cid, "heading_path": path, "ordinal": ordinal}

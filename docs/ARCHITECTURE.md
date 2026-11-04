@@ -14,11 +14,12 @@ corpus/sources.yaml ──► approved entries only ──► one Document per s
                                                     attribution, url, visibility)
                                                          │
                                                          ▼
-                             MarkdownHeaderTextSplitter (headings into metadata)
+                     MarkdownHeaderTextSplitter (headings into metadata: heading_path)
                                                          │
                                                          ▼
                           RecursiveCharacterTextSplitter (size and overlap in words)
                                                          │  chunk_id into metadata
+                                                         │  text = "A > B > C" + blank line + body
                                                          ▼
         index(docs, SQLRecordManager, PGVectorStore, cleanup="full", source_id_key="source_id")
                                                          │
@@ -33,7 +34,8 @@ question ──► PrefixedEmbeddings ("search_query: ...")
          ──► retriever on chunks_<model>, filtered to visibility public or sanitized
                dense:  cosine distance (<=>), closest first
                mmr:    fetch_k closest, then k picked for closeness and variety
-               hybrid: dense list + full-text list (plainto_tsquery), fused with RRF
+               hybrid: dense list + keyword list (any question word, ts_rank_cd),
+                       fused with RRF (k = 60) in Python
          ──► chunks with their metadata
 ```
 
@@ -47,15 +49,16 @@ All paths are under `backend/src/profile_rag/`.
 | `corpus/snapshot.py` | Copies a local file or URL into `approved/` (or `private/`) and records its revision. |
 | `corpus/scan.py` | Flags secrets, email addresses, phone numbers, and internal hosts for the reviewer. |
 | `corpus/documents.py` | Loads each approved snapshot as a `Document`, after it checks the file hash. |
-| `corpus/splitting.py` | Splits documents at headings, then by size in words. Gives each chunk a stable `chunk_id`. |
+| `corpus/splitting.py` | Splits documents at headings, then by size in words. Starts each chunk's text with its heading path. Gives each chunk a stable `chunk_id`. |
 | `corpus/sources_table.py` | Keeps the `sources` table equal to the approved registry entries. |
 | `vectorstore/models.py` | The embedding models: Ollama tag, digest, dimensions, table name, and prefixes. |
 | `vectorstore/prefixed.py` | `PrefixedEmbeddings`: adds the model's document or query prefix and checks every vector. |
 | `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. |
 | `vectorstore/indexing.py` | Runs LangChain `index()` with a record manager per model. |
 | `retrievers/dense.py` | `dense_retriever`, `mmr_retriever`, and the `VISIBLE` filter. |
-| `retrievers/hybrid.py` | `HybridRetriever`: dense and keyword search fused with reciprocal rank fusion. |
-| `retrievers/factory.py` | `build_retriever(mode, store, k)`: the one place that turns a search mode into a retriever. `search` and `eval` both use it. |
+| `retrievers/keyword.py` | `keyword_search`: the chunks that contain any word of the question, ranked by `ts_rank_cd`, with plain SQL on the model's table. |
+| `retrievers/hybrid.py` | `HybridRetriever`: the store's dense search and `keyword_search`, fused with reciprocal rank fusion. |
+| `retrievers/factory.py` | `build_retriever(mode, store, k, conninfo=, model=)`: the one place that turns a search mode into a retriever. `search` and `eval` both use it. |
 | `evaluation/questions.py` | The JSONL question format, validated with Pydantic. |
 | `evaluation/labels.py` | Resolves each label (source ID and quoted span) to the chunk IDs that contain the span. |
 | `evaluation/metrics.py` | Recall@k, reciprocal rank, and the run summary. |
@@ -78,7 +81,7 @@ A chunk table has these columns, in this order:
 | Column | Type | Set by |
 | --- | --- | --- |
 | `langchain_id` | `text`, primary key | `index()`: a SHA-256 of the content and metadata |
-| `content` | `text` | The chunk text |
+| `content` | `text` | The chunk text: heading path line, blank line, body |
 | `embedding` | `vector(N)` | `PrefixedEmbeddings` |
 | `content_tsv` | `tsvector` | `to_tsvector('pg_catalog.english', content)` on every insert |
 | `source_id`, `chunk_id`, `attribution`, `visibility` | `text NOT NULL` | The matching metadata keys |
@@ -90,7 +93,8 @@ These langchain-postgres 0.0.19 behaviors shape the code:
 
 - `index()` ignores `Document.id`. Its own hash becomes the row ID, so `chunk_id` is a metadata column.
 - A store opened without a `HybridSearchConfig` leaves `content_tsv` empty, and the insert fails. The index store always has one.
-- A search writes the query into the `HybridSearchConfig` it gets. `HybridRetriever` builds a new config for every query and searches a store opened without one.
+- A search writes the query into the `HybridSearchConfig` it gets, so a reused config searches every later query with the first query's words. The search store is opened without one, and `HybridRetriever` does not use the store's hybrid search at all (next item).
+- The store's keyword search builds its query with `plainto_tsquery`, which joins every question word with AND, and has no option to change that. A whole question then matches almost no chunk (0 of 14 example questions). `retrievers/keyword.py` runs the keyword half instead (see [Keyword search](#keyword-search)).
 - MMR treats `lambda_mult=0` as the default 0.5. `mmr_retriever` refuses 0 and always passes `fetch_k`.
 
 ## Corpus policy
@@ -146,6 +150,29 @@ To search, give a question and a mode:
 uv --directory backend run profile-rag search "Which databases has Dana used?" --mode hybrid -k 5
 ```
 
+### Chunk text
+
+A chunk's text (the `content` column, the text that is embedded and that `content_tsv` is built from) is its heading path, joined by ` > `, then a blank line, then the body:
+
+```text
+Dana Whitlock > Experience > Senior Backend Engineer, Harborlight Analytics (2023 to present)
+
+- Led the move of background jobs from a Redis-based queue to a ...
+```
+
+Headings name jobs, companies, and projects that the body rarely repeats. With the path in the text, both dense and keyword search can match them. Text before the first heading has no heading line. `heading_path` stays in the metadata. `splitting.chunk_body` returns the text without the heading line; `chunks show` prints the path as the chunk's title and the body below it, and the word limit applies to the body. This is splitter version `v2`; version `v1` had the body only. The version is part of every `chunk_id`, so changing it makes `index` replace every row.
+
+### Keyword search
+
+Hybrid mode runs two searches on the model's table, each for 20 candidates (or `k`, if larger), both with the visibility filter:
+
+1. Dense: the store's `similarity_search`, closest first.
+2. Keyword: `retrievers/keyword.py`. Postgres turns the question into lexemes with `to_tsvector('pg_catalog.english', question)`, the configuration that fills `content_tsv`. That drops stopwords and stems the rest. The lexemes are joined with OR (`|`), so a chunk matches if it contains any of them, and `ts_rank_cd` ranks chunks with more and closer matches first. A question of stopwords only has no keyword hits, and the result is the dense order.
+
+Reciprocal rank fusion merges the two lists: a chunk at rank r (from 0) in a list adds 1 / (r + 60), and the `k` best sums are returned.
+
+The keyword SQL text is fixed. The question, the tsquery, the filter values, and the limit are query parameters. The table name must be one of the model tables and is quoted with `psycopg.sql.Identifier`.
+
 Each output line shows the rank, the cosine distance between the question and the chunk, the `chunk_id`, and the heading path. The distance is the same measure in every mode. It shows where MMR and hybrid search leave the dense order, but it is not the score those modes rank by.
 
 ## Evaluation
@@ -170,7 +197,7 @@ labels ──► resolve span -> chunk IDs (labels.py) ──► any label error
                                         │
 chunks_<model> must hold exactly this split, or stop with the `make index` command to run
                                         │
-build_retriever(mode, store, k) ──► invoke(question) per question ──► metadata["chunk_id"]
+build_retriever(mode, store, k, ...) ──► invoke(question) per question ──► metadata["chunk_id"]
                                         │
                      recall@k, reciprocal rank (metrics.py)
                                         │
@@ -199,8 +226,8 @@ One JSON object per line:
 A label is a source ID and a span copied verbatim from that source. It names text, not chunk IDs, so labels stay valid when the splitter settings change.
 
 - Whitespace is normalised on both sides. Each run of spaces, tabs, and line breaks becomes one space. Case, punctuation, and Markdown marks must match.
-- A label resolves to every chunk of its source that contains the whole span. A span in the overlap of two chunks resolves to both, and either one counts.
-- A span that crosses a chunk boundary is a label error. So is a span that includes a heading line, because headings are metadata and not chunk text. Shorten the span to the sentence that proves the answer.
+- A label resolves to every chunk of its source whose body contains the whole span. The body is the chunk text without its heading line, so the heading line never splits a span, and a span never matches only a heading. A span in the overlap of two chunks resolves to both, and either one counts.
+- A span that crosses a chunk boundary is a label error. So is a span that includes a heading line, because headings are not part of any body. Shorten the span to the sentence that proves the answer.
 - A span the source does not contain, or a source with no chunks (unknown, not approved, or empty), is a label error.
 
 The command prints each label error as question ID, label position, source ID, and reason, never the span. Any error stops the run, so a broken label cannot silently lower recall.
@@ -227,5 +254,5 @@ Committed files hold no question, span, or chunk text. `backend/tests/test_runne
 
 ### Results so far
 
-[`docs/eval/example-comparison.md`](eval/example-comparison.md) compares both models and all three modes on the example set. The example corpus has 15 chunks and 12 answerable questions, too small to choose a model. The default model is chosen from the dev set on approved sources, then checked once on the held-out set.
+[`docs/eval/example-comparison.md`](eval/example-comparison.md) compares both models and all three modes on the example set, before and after splitter v2 and the OR keyword search. With them, every recall and MRR rose or stayed the same except qwen3-06b MMR at k = 8 (recall 1.000 to 0.917) and, for qwen3-06b, hybrid MRR is below dense MRR. Hybrid k = 3 recall is the best k = 3 recall for both models. Every example question now gets at least one keyword hit (before: 0 of 14). The example corpus has 15 chunks and 12 answerable questions, too small to choose a model. The default model is chosen from the dev set on approved sources, then checked once on the held-out set.
 

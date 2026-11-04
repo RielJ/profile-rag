@@ -10,12 +10,15 @@ Rules:
   and line breaks becomes one space, and leading and trailing whitespace is
   dropped. Nothing else changes. Case, punctuation, and Markdown marks such
   as `**` must match the source file.
-- A label resolves to every chunk of its source whose text contains the
-  whole span. Neighbouring chunks overlap, so a span inside an overlap
-  resolves to two chunks; retrieving either one counts as finding it.
+- A label resolves to every chunk of its source whose body contains the
+  whole span. The body is the chunk text without its heading line
+  (`splitting.chunk_body`), so a span never matches only because a heading
+  repeats its words, and the heading line never splits a span.
+  Neighbouring chunks overlap, so a span inside an overlap resolves to two
+  chunks; retrieving either one counts as finding it.
 - A span must fit inside one chunk. A span that crosses a chunk boundary
   is a label error, as is a span that includes a heading line (headings are
-  metadata, not chunk text) or a span the source does not contain. Shorten
+  not part of any body) or a span the source does not contain. Shorten
   the span to the sentence that proves the answer.
 - A label for a source with no chunks (unknown, not approved, or empty) is
   a label error.
@@ -29,6 +32,7 @@ from dataclasses import dataclass
 
 from langchain_core.documents import Document
 
+from profile_rag.corpus.splitting import chunk_body
 from profile_rag.evaluation.questions import Question
 
 
@@ -86,7 +90,7 @@ def resolve_labels(
     by_source: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for chunk in chunks:
         by_source[chunk.metadata["source_id"]].append(
-            (chunk.metadata["chunk_id"], normalise(chunk.page_content))
+            (chunk.metadata["chunk_id"], normalise(chunk_body(chunk)))
         )
     source_text = {doc.metadata["source_id"]: normalise(doc.page_content) for doc in documents}
 

@@ -2,7 +2,7 @@
 
 A question-answering application about Riel's professional experience. It answers only from a reviewed corpus of sources, and each answer cites its sources.
 
-The backend indexes approved sources into Postgres with pgvector, through LangChain and local Ollama embeddings. It retrieves chunks with dense, MMR, or hybrid (dense plus full-text) search, and measures retrieval with recall@k and MRR on labeled question sets. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the pipeline, the modules, the tables, and the corpus policy.
+The backend indexes approved sources into Postgres with pgvector, through LangChain and local Ollama embeddings. Each chunk's text starts with its heading path, so headings such as job titles are searchable. It retrieves chunks with dense, MMR, or hybrid (dense plus keyword) search, and measures retrieval with recall@k and MRR on labeled question sets. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the pipeline, the modules, the tables, and the corpus policy.
 
 ## Requirements
 
@@ -55,7 +55,9 @@ Then ask a question:
 uv --directory backend run profile-rag search "Which databases has Dana used?" --mode hybrid -k 5
 ```
 
-`--mode` is `dense` (the default), `mmr`, or `hybrid`. `--model` selects the table: `nomic-v15` (the default) or `qwen3-06b`.
+`--mode` is `dense` (the default), `mmr`, or `hybrid`. Hybrid search fuses the dense results with a keyword search that matches any word of the question. `--model` selects the table: `nomic-v15` (the default) or `qwen3-06b`.
+
+After a splitter change (a new `SPLITTER_VERSION` in `backend/src/profile_rag/corpus/splitting.py`), run `make index` again for each model and corpus. Every chunk ID changes, so the command replaces every row and reports them as added and deleted.
 
 ## Evaluate retrieval
 

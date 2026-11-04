@@ -528,7 +528,11 @@ def chunks_show(
         int, typer.Option(help="Most words a chunk repeats from the previous one.")
     ] = DEFAULT_OVERLAP_WORDS,
 ) -> None:
-    """Split one approved source now and print its chunks, each under its heading path."""
+    """Split one approved source now and print its chunks, each under its heading path.
+
+    The text a chunk embeds is its heading path (the `[n]` line), a blank
+    line, then the body (the `|` lines). The word count is the body's.
+    """
     root = root.expanduser().resolve()
     entry = _entry(_load(root), source_id)
     if entry.state != "approved":
@@ -551,13 +555,14 @@ def chunks_show(
     )
     for chunk in chunks:
         heading_path: list[str] = chunk.metadata["heading_path"]
-        path = " > ".join(heading_path) or "(before the first heading)"
-        size = splitting.count_words(chunk.page_content)
+        path = splitting.heading_line(heading_path) or "(before the first heading)"
+        body = splitting.chunk_body(chunk)
+        size = splitting.count_words(body)
         typer.echo(
             f"\n[{chunk.metadata['ordinal']}] {path}\n"
             f"    {size} words, id {chunk.metadata['chunk_id']}"
         )
-        for line in chunk.page_content.split("\n"):
+        for line in body.split("\n"):
             typer.echo(f"    | {line}".rstrip())
 
 
@@ -704,7 +709,8 @@ def search_command(
     try:
         search_store = store.open_search_store(engine, model, embeddings)
         try:
-            chunks = build_retriever(mode, search_store, k).invoke(question)
+            retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
+            chunks = retriever.invoke(question)
             distances = _distances(search_store, question, chunks) if chunks else []
         except EmbeddingError as error:
             _fail(f"the question: {error.reason}")
@@ -791,7 +797,7 @@ def eval_command(
     engine = PGEngine.from_connection_string(url=database_url)
     try:
         search_store = store.open_search_store(engine, model, embeddings)
-        retriever = build_retriever(mode, search_store, k)
+        retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
         try:
             output = run_evaluation(
                 retriever,

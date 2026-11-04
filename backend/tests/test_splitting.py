@@ -21,8 +21,11 @@ from profile_rag.corpus.splitting import (
     DEFAULT_CHUNK_WORDS,
     DEFAULT_OVERLAP_WORDS,
     SPLITTER_VERSION,
+    chunk_body,
     chunk_id,
+    chunk_text,
     count_words,
+    heading_line,
     split_documents,
 )
 
@@ -93,7 +96,7 @@ def words_outside_headings(text: str) -> list[str]:
 
 def test_public_constants() -> None:
     assert (DEFAULT_CHUNK_WORDS, DEFAULT_OVERLAP_WORDS) == (200, 40)
-    assert SPLITTER_VERSION == "v1"
+    assert SPLITTER_VERSION == "v2"
     assert count_words("- Led the  PostgreSQL-backed\nqueue") == 5
 
 
@@ -120,13 +123,13 @@ def test_no_chunk_is_longer_than_chunk_words(chunk_words: int, overlap_words: in
         example_documents(), chunk_words=chunk_words, overlap_words=overlap_words
     )
     assert chunks
-    assert max(count_words(chunk.page_content) for chunk in chunks) <= chunk_words
+    assert max(count_words(chunk_body(chunk)) for chunk in chunks) <= chunk_words
 
 
 def test_a_small_section_stays_one_small_chunk() -> None:
     text = "## Skills\nPython, Go, PostgreSQL.\n## Talks\n" + LONG_LINE + "\n"
     chunks = split_documents([source(text)], chunk_words=200, overlap_words=40)
-    assert [chunk.page_content for chunk in chunks] == ["Python, Go, PostgreSQL.", LONG_LINE]
+    assert [chunk_body(chunk) for chunk in chunks] == ["Python, Go, PostgreSQL.", LONG_LINE]
 
 
 def test_a_long_line_is_cut_with_overlap() -> None:
@@ -140,7 +143,7 @@ def test_a_long_line_is_cut_with_overlap() -> None:
 def test_chunks_of_different_sections_never_overlap() -> None:
     text = "## Harborlight\n" + LONG_LINE + "\n## Copperfield\nBuilt the tracking API.\n"
     chunks = split_documents([source(text)], chunk_words=10, overlap_words=3)
-    assert chunks[-1].page_content == "Built the tracking API."
+    assert chunk_body(chunks[-1]) == "Built the tracking API."
     assert chunks[-1].metadata["heading_path"] == ["Copperfield"]
 
 
@@ -160,7 +163,7 @@ def test_heading_paths_follow_the_headings_above_each_chunk() -> None:
 
 def test_hash_lines_inside_fences_are_text_not_headings() -> None:
     chunks = split_documents([source(NESTED)], chunk_words=200, overlap_words=0)
-    under_d = chunks[3].page_content
+    under_d = chunk_body(chunks[3])
     assert "# install the queue" in under_d
     assert "## not a heading either" in under_d
 
@@ -168,7 +171,7 @@ def test_hash_lines_inside_fences_are_text_not_headings() -> None:
 def test_heading_lines_are_not_in_any_chunk() -> None:
     chunks = split_documents(example_documents(), chunk_words=50, overlap_words=10)
     for chunk in chunks:
-        assert not any(HEADING.match(line) for line in chunk.page_content.split("\n")), chunk
+        assert not any(HEADING.match(line) for line in chunk_body(chunk).split("\n")), chunk
 
 
 def test_example_resume_heading_paths() -> None:
@@ -188,6 +191,54 @@ def test_a_document_without_words_gives_no_chunks(text: str) -> None:
     assert split_documents([source(text)]) == []
 
 
+# --- the heading line -------------------------------------------------------------------
+
+
+def test_each_chunk_starts_with_its_heading_path() -> None:
+    chunks = split_documents([source(NESTED)], chunk_words=200, overlap_words=0)
+    assert [chunk.page_content.split("\n\n")[0] for chunk in chunks[1:]] == [
+        "A",
+        "A > C",
+        "A > D",
+        "A > D > Deep",
+    ]
+    assert chunks[2].page_content == "A > C\n\nText under C."
+
+
+def test_text_before_the_first_heading_has_no_heading_line() -> None:
+    (first, *_) = split_documents([source(NESTED)], chunk_words=200, overlap_words=0)
+    assert first.metadata["heading_path"] == []
+    assert first.page_content == "Intro before any heading."
+    assert chunk_body(first) == first.page_content
+
+
+def test_example_resume_chunks_name_the_job() -> None:
+    (resume,) = [doc for doc in example_documents() if doc.metadata["source_id"] == "resume-2026"]
+    job = "Senior Backend Engineer, Harborlight Analytics (2023 to present)"
+    under_job = [c for c in split_documents([resume]) if job in c.metadata["heading_path"]]
+    assert under_job
+    for chunk in under_job:
+        assert chunk.page_content.startswith(f"Dana Whitlock > Experience > {job}\n\n")
+        assert job not in chunk_body(chunk)
+
+
+def test_chunk_text_and_chunk_body_round_trip() -> None:
+    path = ["Dana Whitlock", "Skills"]
+    assert heading_line(path) == "Dana Whitlock > Skills"
+    assert heading_line([]) == ""
+    text = chunk_text(path, "Python, Go.")
+    assert text == "Dana Whitlock > Skills\n\nPython, Go."
+    doc = Document(page_content=text, metadata={"heading_path": path})
+    assert chunk_body(doc) == "Python, Go."
+
+
+def test_chunk_body_refuses_text_without_its_heading_line() -> None:
+    metadata = {"heading_path": ["Skills"], "chunk_id": "x"}
+    doc = Document(page_content="Python, Go.", metadata=metadata)
+    with pytest.raises(ValueError, match="does not start with its headings"):
+        chunk_body(doc)
+
+
 # --- coverage ---------------------------------------------------------------------------
 
 
@@ -201,7 +252,7 @@ def test_every_word_outside_headings_is_in_a_chunk(chunk_words: int, overlap_wor
             word
             for chunk in chunks
             if chunk.metadata["source_id"] == doc.metadata["source_id"]
-            for word in chunk.page_content.split()
+            for word in chunk_body(chunk).split()
         )
         assert expected - found == Counter(), doc.metadata["source_id"]
 
@@ -272,7 +323,7 @@ def test_chunk_id_is_in_metadata_and_on_the_document() -> None:
     chunks = split_documents(example_documents(), chunk_words=50, overlap_words=10)
     for chunk in chunks:
         metadata = chunk.metadata
-        expected = chunk_id(metadata["source_id"], metadata["heading_path"], chunk.page_content)
+        expected = chunk_id(metadata["source_id"], metadata["heading_path"], chunk_body(chunk))
         assert metadata["chunk_id"] == expected
         assert chunk.id == expected
 
@@ -305,7 +356,7 @@ def test_inserting_a_section_near_the_top_keeps_every_other_id() -> None:
 def test_the_same_text_under_other_headings_gets_another_id() -> None:
     text = "## Harborlight\nWrote the runbook.\n## Copperfield\nWrote the runbook.\n"
     first, second = split_documents([source(text)])
-    assert first.page_content == second.page_content
+    assert chunk_body(first) == chunk_body(second)
     assert first.id != second.id
     assert second.id == chunk_id("note-dana", ["Copperfield"], "Wrote the runbook.")
 

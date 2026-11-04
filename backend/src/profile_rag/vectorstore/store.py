@@ -33,6 +33,15 @@ ID_COLUMN = "langchain_id"
 # The tsvector column for keyword search, filled by the store on every insert.
 TSV_COLUMN = "content_tsv"
 
+# PGVectorStore's default names for the chunk text and the JSON metadata.
+# retrievers/keyword.py reads rows with plain SQL and needs them.
+CONTENT_COLUMN = "content"
+METADATA_JSON_COLUMN = "langchain_metadata"
+
+# The text search configuration that fills TSV_COLUMN: the default `tsv_lang`
+# of HybridSearchConfig. Keyword search must parse questions with the same one.
+TS_CONFIG = "pg_catalog.english"
+
 
 def tsv_index_name(model: EmbeddingModel) -> str:
     """The name of the table's GIN index on `TSV_COLUMN`."""
@@ -66,7 +75,7 @@ def _hybrid_config(model: EmbeddingModel) -> HybridSearchConfig:
     # Pyrefly reports HybridSearchConfig as abstract. It has no abstract
     # methods, so instantiating it works.
     return HybridSearchConfig(  # pyrefly: ignore[direct-abstract-base-instantiation]
-        tsv_column=TSV_COLUMN, index_name=tsv_index_name(model)
+        tsv_column=TSV_COLUMN, tsv_lang=TS_CONFIG, index_name=tsv_index_name(model)
     )
 
 

@@ -38,11 +38,15 @@ def question(*labels: tuple[str, str], qid: str = "q1") -> Question:
     )
 
 
-def doc(source_id: str, text: str, chunk_id: str | None = None) -> Document:
-    metadata: dict[str, object] = {"source_id": source_id}
-    if chunk_id is not None:
-        metadata["chunk_id"] = chunk_id
-    return Document(page_content=text, metadata=metadata)
+def doc(
+    source_id: str, text: str, chunk_id: str | None = None, heading_path: list[str] | None = None
+) -> Document:
+    """A chunk (with `chunk_id`) or a source (without). A chunk's text gets its heading line."""
+    if chunk_id is None:
+        return Document(page_content=text, metadata={"source_id": source_id})
+    path = heading_path or []
+    metadata = {"source_id": source_id, "chunk_id": chunk_id, "heading_path": path}
+    return Document(page_content=splitting.chunk_text(path, text), metadata=metadata)
 
 
 # --- The question file -------------------------------------------------------------
@@ -137,6 +141,21 @@ def test_a_span_in_an_overlap_resolves_to_both_chunks() -> None:
     ]
     resolution = resolve_labels([question(("s", "four five"))], chunks)
     assert resolution.questions[0].relevant == (frozenset({"s:1", "s:2"}),)
+
+
+def test_a_span_at_the_start_of_the_body_resolves_under_a_heading_line() -> None:
+    chunks = [doc("s", "Led the move to Go.", "s:1", ["Dana", "Acme"])]
+    resolution = resolve_labels([question(("s", "Led the move"))], chunks)
+    assert resolution.questions[0].relevant == (frozenset({"s:1"}),)
+
+
+def test_a_span_does_not_match_the_heading_line() -> None:
+    source = doc("s", "# Dana\n## Acme\nLed the move to Go.")
+    chunks = [doc("s", "Led the move to Go.", "s:1", ["Dana", "Acme"])]
+    resolution = resolve_labels([question(("s", "Acme Led the move"))], chunks, [source])
+    assert "crosses a chunk boundary or a heading" in resolution.errors[0].reason
+    resolution = resolve_labels([question(("s", "Dana > Acme"))], chunks, [source])
+    assert resolution.errors[0].reason == "the span is in no chunk of the source"
 
 
 def test_a_span_only_matches_chunks_of_its_own_source() -> None:

@@ -43,7 +43,7 @@ def test_each_chunk_shows_path_size_id_and_text(monkeypatch: pytest.MonkeyPatch)
                 metadata={"heading_path": [], "ordinal": 0, "chunk_id": "x:0"},
             ),
             Document(
-                page_content="Python, Go.\nPostgreSQL.",
+                page_content="Dana Whitlock > Skills\n\nPython, Go.\nPostgreSQL.",
                 metadata={
                     "heading_path": ["Dana Whitlock", "Skills"],
                     "ordinal": 1,

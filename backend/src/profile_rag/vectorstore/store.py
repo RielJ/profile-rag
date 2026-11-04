@@ -14,6 +14,7 @@ import psycopg
 from langchain_core.embeddings import Embeddings
 from langchain_postgres import Column, PGEngine, PGVectorStore
 from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig
+from langchain_postgres.v2.indexes import HNSWQueryOptions
 from psycopg import sql
 
 from profile_rag.vectorstore.models import MODELS, EmbeddingModel
@@ -64,10 +65,14 @@ def chunk_ids(conninfo: str, model: EmbeddingModel) -> set[str]:
     if model.table_name not in TABLE_NAMES:
         raise ValueError(f"unknown chunk table {model.table_name!r}")
     with psycopg.connect(conninfo) as conn:
-        rows = conn.execute(
-            sql.SQL("SELECT chunk_id FROM {}").format(sql.Identifier(model.table_name))
-        )
+        rows = conn.execute(_SELECT_CHUNK_IDS[model.table_name])
         return {row[0] for row in rows}
+
+
+# One fixed query per chunk table, built from the allowlist `TABLE_NAMES`.
+_SELECT_CHUNK_IDS = {
+    table: sql.SQL("SELECT chunk_id FROM {}").format(sql.Identifier(table)) for table in TABLE_NAMES
+}
 
 
 def _hybrid_config(model: EmbeddingModel) -> HybridSearchConfig:
@@ -129,12 +134,23 @@ def open_index_store(
 
 
 def open_search_store(
-    engine: PGEngine, model: EmbeddingModel, embeddings: Embeddings
+    engine: PGEngine,
+    model: EmbeddingModel,
+    embeddings: Embeddings,
+    *,
+    ef_search: int | None = None,
 ) -> PGVectorStore:
-    """Open the model's table for search: like `open_index_store`, without a hybrid config."""
+    """Open the model's table for search: like `open_index_store`, without a hybrid config.
+
+    With `ef_search`, each dense query runs after `SET LOCAL hnsw.ef_search =
+    <ef_search>` in its own transaction. It matters only when Postgres plans
+    the query with the HNSW index (vectorstore/hnsw.py). None keeps the
+    server's setting (pgvector's default is 40).
+    """
     return PGVectorStore.create_sync(
         engine=engine,
         embedding_service=embeddings,
         table_name=model.table_name,
         metadata_columns=list(METADATA_COLUMNS),
+        index_query_options=None if ef_search is None else HNSWQueryOptions(ef_search=ef_search),
     )

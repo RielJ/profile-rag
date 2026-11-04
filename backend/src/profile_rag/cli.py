@@ -98,12 +98,13 @@ from profile_rag.corpus.splitting import (
     DEFAULT_OVERLAP_WORDS,
     SPLITTER_VERSION,
 )
-from profile_rag.evaluation.labels import resolve_labels
+from profile_rag.evaluation import ann_compare
+from profile_rag.evaluation.labels import ResolvedQuestion, resolve_labels
 from profile_rag.evaluation.questions import QuestionFileError, load_questions
 from profile_rag.evaluation.runner import RunConfig, run_evaluation
-from profile_rag.retrievers.factory import SearchMode, build_retriever
+from profile_rag.retrievers.factory import SearchMode, build_retriever, dense_candidates
 from profile_rag.settings import REPO_ROOT, get_settings
-from profile_rag.vectorstore import indexing, store
+from profile_rag.vectorstore import hnsw, indexing, store
 from profile_rag.vectorstore.models import DEFAULT_MODEL, MODELS, EmbeddingModel
 from profile_rag.vectorstore.prefixed import EmbeddingError, PrefixedEmbeddings
 
@@ -122,6 +123,8 @@ corpus_app = typer.Typer(help="Manage the corpus registry (sources.yaml) and rev
 app.add_typer(corpus_app, name="corpus")
 chunks_app = typer.Typer(help="Read the chunks the splitter makes from a source.")
 app.add_typer(chunks_app, name="chunks")
+hnsw_app = typer.Typer(help="Manage the HNSW index of a model's chunk table.")
+app.add_typer(hnsw_app, name="hnsw")
 
 
 def main() -> None:
@@ -674,6 +677,29 @@ def index_command(
 # --- search -------------------------------------------------------------------
 
 
+def _warn_low_ef_search(ef_search: int | None, mode: SearchMode, k: int) -> None:
+    """Warn if an HNSW scan could return fewer rows than the dense query asks for."""
+    wanted = dense_candidates(mode, k)
+    if ef_search is not None and ef_search < wanted:
+        typer.echo(
+            f"warning: --ef-search {ef_search} is below the {wanted} rows that {mode} search"
+            f" asks the dense query for. When Postgres uses the HNSW index, it returns at"
+            f" most {ef_search}.",
+            err=True,
+        )
+
+
+EfSearchOption = Annotated[
+    int | None,
+    typer.Option(
+        "--ef-search",
+        min=hnsw.EF_SEARCH_MIN,
+        max=hnsw.EF_SEARCH_MAX,
+        help="Set hnsw.ef_search for the dense queries (only matters if the HNSW index is used).",
+    ),
+]
+
+
 def _distances(search_store: PGVectorStore, question: str, chunks: list[Document]) -> list[float]:
     """The cosine distance from the question to each chunk, in the order of `chunks`."""
     ids = [chunk.metadata["chunk_id"] for chunk in chunks]
@@ -693,6 +719,7 @@ def search_command(
     ] = DEFAULT_MODEL,
     mode: Annotated[SearchMode, typer.Option(help="Which retriever to run.")] = "dense",
     k: Annotated[int, typer.Option("-k", min=1, help="How many chunks to print.")] = 8,
+    ef_search: EfSearchOption = None,
 ) -> None:
     """Retrieve the chunks for a question and print them, best first."""
     model = MODELS.get(model_key)
@@ -704,10 +731,11 @@ def search_command(
     if not store.table_exists(database_url, model.table_name):
         _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
 
+    _warn_low_ef_search(ef_search, mode, k)
     embeddings = _embeddings(model, settings.ollama_url)
     engine = PGEngine.from_connection_string(url=database_url)
     try:
-        search_store = store.open_search_store(engine, model, embeddings)
+        search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
         try:
             retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
             chunks = retriever.invoke(question)
@@ -741,23 +769,14 @@ EVAL_RESULTS_DIR = REPO_ROOT / "eval" / "results"
 EVAL_DOCS_DIR = REPO_ROOT / "docs" / "eval"
 
 
-@app.command("eval")
-def eval_command(
-    eval_set: Annotated[
-        EvalSet,
-        typer.Option("--set", help="dev or heldout (eval/), or example (eval-example/)."),
-    ] = "dev",
-    model_key: Annotated[
-        str,
-        typer.Option("--model", help=f"One of: {', '.join(MODELS)}."),
-    ] = DEFAULT_MODEL,
-    mode: Annotated[SearchMode, typer.Option(help="Which retriever to run.")] = "dense",
-    k: Annotated[int, typer.Option("-k", min=1, help="How many chunks each question gets.")] = 8,
-) -> None:
-    """Measure recall@k and MRR of a question set, and write the reports."""
-    model = MODELS.get(model_key)
-    if model is None:
-        _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
+def _eval_inputs(
+    eval_set: str, model: EmbeddingModel
+) -> tuple[list[ResolvedQuestion], int, str, str]:
+    """The resolved questions of a set, its chunk count, the database URL, and the Ollama URL.
+
+    Exits with an error if the questions do not resolve, the model is not
+    pulled, or the model's table does not hold exactly the set's corpus.
+    """
     questions_path, root = EVAL_SETS[eval_set]
     try:
         questions = load_questions(questions_path)
@@ -781,8 +800,7 @@ def eval_command(
     settings = get_settings()
     database_url = str(settings.database_url)
     _check_model(model, settings.ollama_url)
-    if not store.table_exists(database_url, model.table_name):
-        _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+    _require_table(database_url, model)
     indexed = store.chunk_ids(database_url, model)
     split = {chunk.metadata["chunk_id"] for chunk in chunks}
     if indexed != split:
@@ -791,17 +809,38 @@ def eval_command(
             f" {len(split - indexed)} chunks missing, {len(indexed - split)} extra."
             f" Run `make index CORPUS_DIR={root.name} MODEL={model.key}` first."
         )
+    return resolution.questions, len(chunks), database_url, settings.ollama_url
 
-    config = RunConfig(eval_set, model.key, mode, k, len(chunks))
-    embeddings = _embeddings(model, settings.ollama_url)
+
+@app.command("eval")
+def eval_command(
+    eval_set: Annotated[
+        EvalSet,
+        typer.Option("--set", help="dev or heldout (eval/), or example (eval-example/)."),
+    ] = "dev",
+    model_key: Annotated[
+        str,
+        typer.Option("--model", help=f"One of: {', '.join(MODELS)}."),
+    ] = DEFAULT_MODEL,
+    mode: Annotated[SearchMode, typer.Option(help="Which retriever to run.")] = "dense",
+    k: Annotated[int, typer.Option("-k", min=1, help="How many chunks each question gets.")] = 8,
+    ef_search: EfSearchOption = None,
+) -> None:
+    """Measure recall@k and MRR of a question set, and write the reports."""
+    model = _model(model_key)
+    questions, chunk_count, database_url, ollama_url = _eval_inputs(eval_set, model)
+
+    config = RunConfig(eval_set, model.key, mode, k, chunk_count, ef_search)
+    _warn_low_ef_search(ef_search, mode, k)
+    embeddings = _embeddings(model, ollama_url)
     engine = PGEngine.from_connection_string(url=database_url)
     try:
-        search_store = store.open_search_store(engine, model, embeddings)
+        search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
         retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
         try:
             output = run_evaluation(
                 retriever,
-                resolution.questions,
+                questions,
                 config,
                 results_dir=EVAL_RESULTS_DIR,
                 docs_dir=EVAL_DOCS_DIR,
@@ -820,8 +859,166 @@ def eval_command(
     )
     typer.echo(f"misses: {', '.join(summary.misses) or 'none'}")
     for path in (output.detail_path, output.report_path, output.comparison_path):
-        shown = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
-        typer.echo(f"wrote {shown}")
+        typer.echo(f"wrote {_shown(path)}")
+
+
+def _shown(path: Path) -> Path:
+    """`path` relative to the repository root, if it is inside it."""
+    return path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+
+
+# --- hnsw ---------------------------------------------------------------------
+
+ModelOption = Annotated[str, typer.Option("--model", help=f"One of: {', '.join(MODELS)}.")]
+
+
+def _model(model_key: str) -> EmbeddingModel:
+    model = MODELS.get(model_key)
+    if model is None:
+        _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
+    return model
+
+
+def _require_table(database_url: str, model: EmbeddingModel) -> None:
+    if not store.table_exists(database_url, model.table_name):
+        _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+
+
+def _describe_index(status: hnsw.HnswStatus | None, model: EmbeddingModel) -> str:
+    if status is None:
+        return f"{model.table_name}: no HNSW index"
+    valid = "valid" if status.valid else "INVALID"
+    return (
+        f"{status.name}: {valid}, m {status.m}, ef_construction {status.ef_construction},"
+        f" {status.size_bytes} bytes"
+    )
+
+
+@hnsw_app.command("apply")
+def hnsw_apply_command(
+    model_key: ModelOption = DEFAULT_MODEL,
+    m: Annotated[int, typer.Option("--m", min=2, max=100, help="Graph links per node.")] = (
+        hnsw.DEFAULT_M
+    ),
+    ef_construction: Annotated[
+        int,
+        typer.Option("--ef-construction", min=4, max=1000, help="Candidates kept while building."),
+    ] = hnsw.DEFAULT_EF_CONSTRUCTION,
+) -> None:
+    """Create the HNSW index on the model's table. Does nothing if it exists with these settings."""
+    model = _model(model_key)
+    settings = get_settings()
+    database_url = str(settings.database_url)
+    _require_table(database_url, model)
+    if ef_construction < 2 * m:
+        _fail(f"--ef-construction must be at least 2 * --m ({2 * m}).")
+    engine = PGEngine.from_connection_string(url=database_url)
+    try:
+        search_store = store.open_search_store(
+            engine, model, _embeddings(model, settings.ollama_url)
+        )
+        result = hnsw.apply_hnsw(
+            search_store, model, conninfo=database_url, m=m, ef_construction=ef_construction
+        )
+    finally:
+        asyncio.run(engine.close())
+    typer.echo(f"{result}: {_describe_index(hnsw.hnsw_status(database_url, model), model)}")
+
+
+@hnsw_app.command("drop")
+def hnsw_drop_command(model_key: ModelOption = DEFAULT_MODEL) -> None:
+    """Drop the HNSW index of the model's table. Does nothing if there is none."""
+    model = _model(model_key)
+    settings = get_settings()
+    database_url = str(settings.database_url)
+    _require_table(database_url, model)
+    existed = hnsw.hnsw_status(database_url, model) is not None
+    engine = PGEngine.from_connection_string(url=database_url)
+    try:
+        search_store = store.open_search_store(
+            engine, model, _embeddings(model, settings.ollama_url)
+        )
+        hnsw.drop_hnsw(search_store, model)
+    finally:
+        asyncio.run(engine.close())
+    action = "dropped" if existed else "absent"
+    typer.echo(f"{action}: {hnsw.hnsw_index_name(model)}")
+
+
+@hnsw_app.command("status")
+def hnsw_status_command(model_key: ModelOption = DEFAULT_MODEL) -> None:
+    """Show the HNSW index of the model's table, if any."""
+    model = _model(model_key)
+    database_url = str(get_settings().database_url)
+    _require_table(database_url, model)
+    status = hnsw.hnsw_status(database_url, model)
+    typer.echo(_describe_index(status, model))
+    if status is not None:
+        typer.echo(status.definition)
+
+
+def _ef_values(text: str) -> list[int]:
+    """`"10,20,40"` as `[10, 20, 40]`, each within pgvector's range."""
+    values: list[int] = []
+    for part in text.split(","):
+        try:
+            value = int(part.strip())
+        except ValueError:
+            _fail(f"--ef-search: {part.strip()!r} is not a whole number.")
+        if not hnsw.EF_SEARCH_MIN <= value <= hnsw.EF_SEARCH_MAX:
+            _fail(f"--ef-search: {value} is outside {hnsw.EF_SEARCH_MIN}..{hnsw.EF_SEARCH_MAX}.")
+        values.append(value)
+    return sorted(set(values))
+
+
+@hnsw_app.command("compare")
+def hnsw_compare_command(
+    model_key: ModelOption = DEFAULT_MODEL,
+    eval_set: Annotated[
+        EvalSet,
+        typer.Option("--set", help="dev or heldout (eval/), or example (eval-example/)."),
+    ] = "dev",
+    k: Annotated[int, typer.Option("-k", min=1, help="How many chunks each question gets.")] = 8,
+    ef_search: Annotated[
+        str, typer.Option("--ef-search", help="Comma-separated hnsw.ef_search values.")
+    ] = "10,20,40,100",
+) -> None:
+    """Compare HNSW and exact dense results; write docs/eval/hnsw-<set>-<model>.md."""
+    model = _model(model_key)
+    ef_values = _ef_values(ef_search)
+    questions, _, database_url, ollama_url = _eval_inputs(eval_set, model)
+    if hnsw.hnsw_status(database_url, model) is None:
+        _fail(f"no HNSW index on {model.table_name}. Run `profile-rag hnsw apply` first.")
+    try:
+        comparison = ann_compare.run_ann_compare(
+            database_url,
+            model,
+            _embeddings(model, ollama_url),
+            questions,
+            set_name=eval_set,
+            chunks=len(store.chunk_ids(database_url, model)),
+            k=k,
+            ef_values=ef_values,
+        )
+    except EmbeddingError as error:
+        _fail(f"a question: {error.reason}")
+    except ValueError as error:
+        _fail(str(error))
+    path = ann_compare.write_ann_report(comparison, EVAL_DOCS_DIR)
+    for plan, line in comparison.plans.items():
+        typer.echo(f"plan ({plan}): {line}")
+    exact = comparison.exact
+    typer.echo(
+        f"exact: recall@{k} {ann_compare.number(exact.recall)}, MRR {ann_compare.number(exact.mrr)}"
+    )
+    for result in comparison.by_ef:
+        typer.echo(
+            f"ef_search {result.ef_search}: overlap@{k} mean {result.mean:.3f},"
+            f" min {result.min:.3f}, short {result.short},"
+            f" recall@{k} {ann_compare.number(result.summary.recall)},"
+            f" MRR {ann_compare.number(result.summary.mrr)}"
+        )
+    typer.echo(f"wrote {_shown(path)}")
 
 
 if __name__ == "__main__":

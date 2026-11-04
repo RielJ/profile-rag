@@ -12,7 +12,8 @@ returned Document. It writes two kinds of output:
   committed, so they hold only numbers, model, mode, k, sample sizes, tags,
   and question IDs. Never question, span, or chunk text.
 
-`<run>` is `<set>-<model>-<mode>-k<k>`. Each report ends with a JSON block of
+`<run>` is `<set>-<model>-<mode>-k<k>`, plus `-ef<N>` for a run with
+`--ef-search N`. Each report ends with a JSON block of
 its numbers; the comparison table is rebuilt from those blocks. Text below
 the `NOTES_MARKER` line of a comparison file is kept when the table is
 rebuilt, so written conclusions survive later runs.
@@ -47,10 +48,13 @@ class RunConfig:
     mode: str
     k: int
     chunks: int
+    # `hnsw.ef_search` set for the dense queries; None keeps the server's.
+    ef_search: int | None = None
 
     @property
     def name(self) -> str:
-        return f"{self.set_name}-{self.model}-{self.mode}-k{self.k}"
+        suffix = "" if self.ef_search is None else f"-ef{self.ef_search}"
+        return f"{self.set_name}-{self.model}-{self.mode}-k{self.k}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -138,6 +142,13 @@ def _misses(summary: Summary) -> str:
     return ", ".join(summary.misses) or "none"
 
 
+def _mode(config: RunConfig) -> str:
+    """The mode, with `ef_search` if the run set it: `dense (ef_search 40)`."""
+    if config.ef_search is None:
+        return config.mode
+    return f"{config.mode} (ef_search {config.ef_search})"
+
+
 def render_report(config: RunConfig, summary: Summary, by_tag: dict[str, Summary]) -> str:
     """The Markdown report of one run. Holds no question or corpus text."""
     lines = [
@@ -147,7 +158,7 @@ def render_report(config: RunConfig, summary: Summary, by_tag: dict[str, Summary
         "",
         "| set | model | mode | k | recall@k | MRR | n | unanswerable | corpus chunks |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-        f"| {config.set_name} | {config.model} | {config.mode} | {config.k}"
+        f"| {config.set_name} | {config.model} | {_mode(config)} | {config.k}"
         f" | {_number(summary.recall)} | {_number(summary.mrr)} | {summary.n}"
         f" | {summary.unanswerable} | {config.chunks} |",
         "",
@@ -165,7 +176,13 @@ def render_report(config: RunConfig, summary: Summary, by_tag: dict[str, Summary
             f"| {tag} | {_number(tagged.recall)} | {_number(tagged.mrr)} | {tagged.n}"
             f" | {tagged.unanswerable} | {_misses(tagged)} |"
         )
-    data = {"config": asdict(config), "summary": asdict(summary)}
+    # Reports of runs without --ef-search keep the shape they had before it.
+    settings = {
+        key: value
+        for key, value in asdict(config).items()
+        if key != "ef_search" or value is not None
+    }
+    data = {"config": settings, "summary": asdict(summary)}
     lines += ["", "## Data", "", "```json", json.dumps(data, indent=2), "```", ""]
     return "\n".join(lines)
 
@@ -202,7 +219,7 @@ def _read_report(path: Path) -> tuple[RunConfig, Summary] | None:
 def write_comparison(set_name: str, docs_dir: Path) -> Path:
     """Rebuild `docs_dir/<set>-comparison.md` from every report of the set.
 
-    Rows are sorted by model, mode, and k. Text below `NOTES_MARKER` in an
+    Rows are sorted by model, mode, k, and ef_search. Text below `NOTES_MARKER` in an
     existing file is kept.
     """
     runs: list[tuple[RunConfig, Summary]] = []
@@ -210,7 +227,7 @@ def write_comparison(set_name: str, docs_dir: Path) -> Path:
         found = _read_report(path)
         if found is not None and found[0].set_name == set_name:
             runs.append(found)
-    runs.sort(key=lambda run: (run[0].model, run[0].mode, run[0].k))
+    runs.sort(key=lambda run: (run[0].model, run[0].mode, run[0].k, run[0].ef_search or 0))
 
     lines = [
         f"# Retrieval comparison: {set_name} set",
@@ -224,7 +241,7 @@ def write_comparison(set_name: str, docs_dir: Path) -> Path:
     ]
     for config, summary in runs:
         lines.append(
-            f"| {config.model} | {config.mode} | {config.k} | {_number(summary.recall)}"
+            f"| {config.model} | {_mode(config)} | {config.k} | {_number(summary.recall)}"
             f" | {_number(summary.mrr)} | {summary.n} | {summary.unanswerable}"
             f" | {_misses(summary)} |"
         )

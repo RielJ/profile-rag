@@ -57,6 +57,8 @@ uv --directory backend run profile-rag search "Which databases has Dana used?" -
 
 `--mode` is `dense` (the default), `mmr`, or `hybrid`. Hybrid search fuses the dense results with a keyword search that matches any word of the question. `--model` selects the table: `nomic-v15` (the default) or `qwen3-06b`.
 
+To add an HNSW index for approximate dense search, run `profile-rag hnsw apply --model <model>`; `hnsw status` and `hnsw drop` report and remove it. `search` and `eval` take `--ef-search N`. `profile-rag hnsw compare --set example --model <model>` compares HNSW results with exact results and writes `docs/eval/hnsw-<set>-<model>.md`. Postgres uses the index only when it is cheaper than reading every row, which is never for a small corpus. "HNSW index" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains the settings and the comparison.
+
 After a splitter change (a new `SPLITTER_VERSION` in `backend/src/profile_rag/corpus/splitting.py`), run `make index` again for each model and corpus. Every chunk ID changes, so the command replaces every row and reports them as added and deleted.
 
 ## Evaluate retrieval

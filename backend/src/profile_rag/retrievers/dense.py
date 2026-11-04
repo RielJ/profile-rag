@@ -17,7 +17,8 @@ from langchain_postgres import PGVectorStore
 # Rows a visitor may see. The registry accepts only these two values, so
 # every indexed chunk passes today. The filter keeps that true in the query
 # itself if a third value is ever added.
-VISIBLE: dict[str, object] = {"visibility": {"$in": ["public", "sanitized"]}}
+VISIBLE_VALUES: tuple[str, ...] = ("public", "sanitized")
+VISIBLE: dict[str, object] = {"visibility": {"$in": list(VISIBLE_VALUES)}}
 
 
 def dense_retriever(

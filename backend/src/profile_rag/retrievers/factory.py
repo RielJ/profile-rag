@@ -23,6 +23,11 @@ CANDIDATES = 20
 MMR_LAMBDA = 0.5
 
 
+def dense_candidates(mode: SearchMode, k: int) -> int:
+    """How many rows the retriever's dense query asks for: `k`, or the candidates."""
+    return k if mode == "dense" else max(CANDIDATES, k)
+
+
 def build_retriever(
     mode: SearchMode, store: PGVectorStore, k: int, *, conninfo: str, model: EmbeddingModel
 ) -> BaseRetriever:
@@ -32,8 +37,13 @@ def build_retriever(
     (`vectorstore.store.open_search_store`). Hybrid mode also reads that
     table with plain SQL through `conninfo`. Every mode applies the
     `dense.VISIBLE` filter.
+
+    `hnsw.ef_search` comes with the store (`open_search_store(...,
+    ef_search=N)`). It applies to every dense query the store runs: dense,
+    MMR's candidates, and the dense half of hybrid. The keyword half of
+    hybrid is plain SQL and never uses the HNSW index.
     """
-    candidates = max(CANDIDATES, k)
+    candidates = dense_candidates(mode, k)
     if mode == "dense":
         return dense.dense_retriever(store, k=k, filter=dense.VISIBLE)
     if mode == "mmr":

@@ -55,6 +55,7 @@ All paths are under `backend/src/profile_rag/`.
 | `vectorstore/prefixed.py` | `PrefixedEmbeddings`: adds the model's document or query prefix and checks every vector. |
 | `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. |
 | `vectorstore/indexing.py` | Runs LangChain `index()` with a record manager per model. |
+| `vectorstore/hnsw.py` | Applies, drops, and reports the HNSW index on a model's table. `open_engine(url, plan=)` forces or forbids index scans, and `explain_dense` shows the plan of the dense query. |
 | `retrievers/dense.py` | `dense_retriever`, `mmr_retriever`, and the `VISIBLE` filter. |
 | `retrievers/keyword.py` | `keyword_search`: the chunks that contain any word of the question, ranked by `ts_rank_cd`, with plain SQL on the model's table. |
 | `retrievers/hybrid.py` | `HybridRetriever`: the store's dense search and `keyword_search`, fused with reciprocal rank fusion. |
@@ -63,9 +64,10 @@ All paths are under `backend/src/profile_rag/`.
 | `evaluation/labels.py` | Resolves each label (source ID and quoted span) to the chunk IDs that contain the span. |
 | `evaluation/metrics.py` | Recall@k, reciprocal rank, and the run summary. |
 | `evaluation/runner.py` | Runs questions through any `BaseRetriever` and writes the detail, the report, and the comparison table. |
+| `evaluation/ann_compare.py` | Compares HNSW dense results with exact dense results (overlap@k) and writes `docs/eval/hnsw-<set>-<model>.md`. |
 | `db/` | Connection pool and the migration runner for `db/migrations/`. |
 | `api/` | FastAPI application. `GET /api/health` reports database status. |
-| `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, and `eval`. |
+| `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, `eval`, and `hnsw`. |
 
 ## Tables
 
@@ -74,6 +76,7 @@ Migrations in `db/migrations/` own one table, `sources`. It holds one row per ap
 LangChain owns the other tables:
 
 - `chunks_nomic_v15` (768 dimensions) and `chunks_qwen3_06b` (1024 dimensions) come from `PGEngine.init_vectorstore_table()`. One table per model keeps one vector size per table.
+- `<table>_hnsw` is an optional HNSW index on a chunk table's `embedding` column. `profile-rag hnsw apply` creates it (see [HNSW index](#hnsw-index)).
 - `upsertion_record` comes from `SQLRecordManager`. It serves every model, with one namespace per model, such as `pgvector/chunks_nomic_v15`.
 
 A chunk table has these columns, in this order:
@@ -175,6 +178,37 @@ The keyword SQL text is fixed. The question, the tsquery, the filter values, and
 
 Each output line shows the rank, the cosine distance between the question and the chunk, the `chunk_id`, and the heading path. The distance is the same measure in every mode. It shows where MMR and hybrid search leave the dense order, but it is not the score those modes rank by.
 
+### HNSW index
+
+Without an index, the dense query (`ORDER BY embedding <=> question LIMIT n`) is a sequential scan: Postgres compares the question with every row. The result is exact. An HNSW index answers from a graph of the vectors instead. It reads fewer rows, but it can miss some of the true nearest chunks. Only dense queries can use it: dense mode, MMR's candidates, and the dense half of hybrid. The keyword half of hybrid is plain SQL on `content_tsv`.
+
+```sh
+uv --directory backend run profile-rag hnsw apply --model nomic-v15        # --m 16 --ef-construction 64
+uv --directory backend run profile-rag hnsw status --model nomic-v15
+uv --directory backend run profile-rag hnsw drop --model nomic-v15
+uv --directory backend run profile-rag search "..." --ef-search 100
+uv --directory backend run profile-rag eval --set example --ef-search 100
+uv --directory backend run profile-rag hnsw compare --model nomic-v15 --set example -k 8 --ef-search 10,20,40,100
+```
+
+- `apply` creates `<table>_hnsw` with `USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')`. `vector_cosine_ops` is the operator class of `<=>`, the cosine distance the store searches with. It prints `created`, `unchanged` (a valid index with the same `m` and `ef_construction` exists), or `rebuilt` (the index was invalid or had other settings). `ef_construction` must be at least 2 × `m`.
+- `drop` removes the index and prints `dropped`, or `absent` if there was none. Search then runs by sequential scan again.
+- `status` prints the index settings, size, and validity from `pg_indexes` and `pg_index`.
+- The index is not part of `index`. Postgres maintains it on every insert, update, and delete, so it needs no rebuild after `make index`.
+
+`--ef-search N` (1 to 1000) opens the store with `HNSWQueryOptions(ef_search=N)`. The store then runs `SET LOCAL hnsw.ef_search = N` in the transaction of each dense query, so the setting reaches no other query. Without the option, the server setting holds (pgvector's default is 40). A higher value keeps more candidates during the graph search: it finds more of the true nearest chunks and reads more rows. pgvector's HNSW scan returns at most `ef_search` rows (pgvector 0.8.7; `hnsw.iterative_scan` is off by default), so a value below the rows the dense query asks for (`k` in dense mode, 20 or `k` in MMR and hybrid) returns too few chunks. `search` and `eval` print a warning in that case.
+
+The planner decides per query whether to use the index. When it estimates a sequential scan to be cheaper, as for a small table, the index is not used and `--ef-search` changes nothing. On the 15 example chunks, `EXPLAIN` of the dense query shows `Seq Scan on chunks_nomic_v15` by default and `Index Scan using chunks_nomic_v15_hnsw on chunks_nomic_v15` with `SET enable_seqscan = off`.
+
+`hnsw compare` measures what the index changes. For each question it runs the dense retriever twice, with the same query vector:
+
+- Exact: an engine whose connections set `enable_indexscan = off`. HNSW has no bitmap scan, so the query is a sequential scan.
+- HNSW, once per `ef_search` value: an engine whose connections set `enable_seqscan = off`, so the planner uses the index whenever it can, and a store with that `ef_search`.
+
+overlap@k of a question is |HNSW top k ∩ exact top k| / |exact top k|; the order inside the top k does not count. The report gives, per `ef_search`, the mean and minimum overlap, the number of questions with fewer chunks than the exact run, and recall@k and MRR of both runs. It also gives the scan node of `EXPLAIN` for the dense query under each planner setting, so it shows whether the index was used. The report holds numbers, settings, and plan node names only.
+
+Results on the example set ([nomic-v15](eval/hnsw-example-nomic-v15.md), [qwen3-06b](eval/hnsw-example-qwen3-06b.md), k = 8): at every `ef_search` from 10 to 100, overlap is 1.000 for every question and recall and MRR equal the exact run. The index does serve these runs: at `ef_search` 1 and 4, below k, mean overlap falls to 0.125 and 0.500 for both models, because the scan returns only 1 or 4 rows. With 15 rows these numbers say nothing about recall on a large corpus; run `hnsw compare --set dev` when the real corpus grows.
+
 ## Evaluation
 
 `profile-rag eval` measures how well a retriever finds the chunks that answer a set of labeled questions:
@@ -204,7 +238,7 @@ build_retriever(mode, store, k, ...) ──► invoke(question) per question ─
         eval/results/<run>.jsonl   docs/eval/<run>.md   docs/eval/<set>-comparison.md
 ```
 
-`<run>` is `<set>-<model>-<mode>-k<k>`.
+`<run>` is `<set>-<model>-<mode>-k<k>`, plus `-ef<N>` for a run with `--ef-search N`.
 
 ### Question format
 
@@ -248,6 +282,7 @@ Each report also breaks the numbers down by tag. A question with several tags co
 
 - `eval/results/<run>.jsonl` (gitignored): one line per question with the question text, the relevant chunk IDs, and the ranked results with `chunk_id`, `source_id`, `heading_path`, and whether each was relevant. Use it to study misses.
 - `docs/eval/<run>.md` (committed): the run's numbers, the per-tag table, the miss IDs, and a JSON block of the same numbers.
+- `docs/eval/hnsw-<set>-<model>.md` (committed): the output of `profile-rag hnsw compare` (see [HNSW index](#hnsw-index)).
 - `docs/eval/<set>-comparison.md` (committed): one row per run of the set (model, mode, k, recall@k, MRR, n, unanswerable count, miss IDs). It is rebuilt from the JSON blocks after every run. Text below the line `<!-- Notes below this line are kept when the table is rebuilt. -->` is kept.
 
 Committed files hold no question, span, or chunk text. `backend/tests/test_runner.py` checks this for the generated files.

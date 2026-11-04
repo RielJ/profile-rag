@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from profile_rag import tracing
 from profile_rag.api import routes
+from profile_rag.api.log_config import configure_logging
 from profile_rag.api.search import open_chains
 from profile_rag.db.pool import create_pool
 from profile_rag.settings import TracingSettings, get_settings
@@ -45,6 +46,8 @@ Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
 def create_app(app_lifespan: Lifespan = lifespan) -> FastAPI:
     """The application. Only the e2e test server (tests/e2e_server.py) passes its own lifespan."""
+    # Before anything logs. Raises a ValidationError for a bad PROFILE_RAG_LOG_LEVEL.
+    configure_logging()
     # Before any LangChain object is made. Raises TracingRefused, which stops
     # the server from starting, if LANGSMITH_TRACING=true outside corpus-example.
     tracing.configure_tracing(TracingSettings(), tracing.corpus_dir_from_env())

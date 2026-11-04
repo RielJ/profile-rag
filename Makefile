@@ -16,9 +16,17 @@ UV := uv --directory backend
 PNPM := $(NODE_EXEC)pnpm --dir frontend
 COMPOSE := docker compose
 
+# $(call env_value,NAME,DEFAULT): NAME from the command line or the
+# environment, else from .env, else DEFAULT. The backend reads .env the same
+# way (settings.py), and docker compose reads it for compose.yaml.
+env_value = $(or $($(1)),$(shell sed -n 's/^$(1)=//p' $(ROOT).env 2>/dev/null | tail -n 1),$(2))
+DB_PORT := $(call env_value,DB_PORT,5443)
+API_PORT := $(call env_value,API_PORT,8000)
+FRONTEND_PORT := $(call env_value,FRONTEND_PORT,5173)
+
 .PHONY: help setup db-up db-down db-reset db-logs psql psql-test migrate index \
-        backend frontend test test-backend test-frontend \
-        test-e2e e2e e2e-install lint format typecheck check types types-check
+        demo backend frontend test test-backend test-frontend \
+        e2e e2e-install lint format typecheck check types types-check
 
 help: ## List available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -31,7 +39,7 @@ setup: ## Install backend and frontend dependencies, create .env if missing
 
 # --- Database -------------------------------------------------------------
 
-db-up: ## Start Postgres + pgvector and wait until it is healthy
+db-up: ## Start Postgres + pgvector on 127.0.0.1:$DB_PORT (default 5443) and wait until healthy
 	$(COMPOSE) up -d --wait db
 
 db-down: ## Stop Postgres (data is kept in the volume)
@@ -62,11 +70,20 @@ index: ## Embed approved chunks into the vector store (needs db-up, migrate, Oll
 
 # --- Run ------------------------------------------------------------------
 
-backend: ## Run the API on http://127.0.0.1:8000 with auto-reload
-	$(UV) run uvicorn profile_rag.api.app:app --reload --host 127.0.0.1 --port 8000
+# `make demo` uses corpus-example/ unless CORPUS_DIR is given on the command
+# line or in the environment: `make demo CORPUS_DIR=corpus`.
+DEMO_CORPUS_DIR := $(if $(filter command line environment,$(origin CORPUS_DIR)),$(CORPUS_DIR),corpus-example)
+demo: ## Check prerequisites, start the database, index, and run the API and UI (Ctrl-C stops)
+	@CORPUS_DIR="$(DEMO_CORPUS_DIR)" MODEL="$(MODEL)" DB_PORT="$(DB_PORT)" \
+		API_PORT="$(API_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" NODE_EXEC="$(NODE_EXEC)" \
+		$(ROOT)scripts/demo.sh
 
-frontend: ## Run the Vite dev server on http://127.0.0.1:5173
-	$(PNPM) dev
+backend: ## Run the API on 127.0.0.1:$API_PORT (default 8000) with auto-reload
+	$(UV) run uvicorn profile_rag.api.app:app --reload --host 127.0.0.1 --port $(API_PORT)
+
+frontend: ## Run the Vite dev server on 127.0.0.1:$FRONTEND_PORT (default 5173)
+	BACKEND_URL="$${BACKEND_URL:-http://127.0.0.1:$(API_PORT)}" \
+		$(PNPM) exec vite --host 127.0.0.1 --port $(FRONTEND_PORT) --strictPort
 
 # --- Quality --------------------------------------------------------------
 
@@ -86,8 +103,6 @@ e2e-install: ## One-time: download the Chromium build Playwright uses
 
 e2e: ## Run the Playwright browser tests (needs db-up and e2e-install)
 	$(PNPM) exec playwright test
-
-test-e2e: e2e
 
 lint: types-check ## Lint backend (ruff) and frontend (oxlint); check the API types
 	$(UV) run ruff check .

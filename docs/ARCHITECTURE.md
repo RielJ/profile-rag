@@ -97,7 +97,9 @@ All paths are under `backend/src/profile_rag/`.
 | `api/routes.py` | `POST /api/ask`, `GET /api/sources/{id}`, and the status code of each failure. |
 | `api/search.py` | `open_chains(settings)`: the startup checks and the search store behind `POST /api/ask`. |
 | `api/openapi.py` | Writes the OpenAPI schema to a file without starting a server, for `make types`. |
+| `api/log_config.py` | `configure_logging()`: sends the `profile_rag` loggers to stderr at `PROFILE_RAG_LOG_LEVEL` (default `INFO`). `create_app()` calls it. |
 | `api/` (other) | The FastAPI application and its lifespan (`app.py`), dependencies (`deps.py`), and `GET /api/health` (`health.py`). |
+| `demo_check.py` | The prerequisite checks of `make demo` (`scripts/demo.sh`) that need Python: ports, Ollama and the model digest, Pi on `PATH`, and at least one approved, unchanged source. |
 | `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, `ask`, `agent`, `compare-agent`, `eval`, and `hnsw`. |
 
 ## Tables
@@ -390,7 +392,7 @@ A failed answer returns a 5xx status with the `failed` variant as its body. The 
 | `invented_citation` | 502 | `InventedCitation`: the reply cited a chunk it was not given |
 | `internal_error` | 500 | Any other exception: a bug |
 
-`message` is a fixed sentence per code (`rag.FAILURES`), written for a visitor. It never contains the error's own text: an `OutputParserException` holds the whole model reply, and a `PiProcessError` holds Pi's stderr. Every `POST /api/ask` response has an `X-Request-ID` header, and a `failed` body repeats it in `request_id`. The server logs one warning per failure, with the request ID, the exception class name, and the code, and no traceback, message, or reply text. `tests/test_api_contract.py` raises each error with a marker string in its message, reply, and stderr, and checks that the marker appears in no response and no log record.
+`message` is a fixed sentence per code (`rag.FAILURES`), written for a visitor. It never contains the error's own text: an `OutputParserException` holds the whole model reply, and a `PiProcessError` holds Pi's stderr. Every `POST /api/ask` response has an `X-Request-ID` header, and a `failed` body repeats it in `request_id`. The server logs one warning per failure, with the request ID, the exception class name, and the code, and no traceback, message, or reply text. uvicorn configures only its own loggers, so `api/log_config.py` gives the `profile_rag` logger a stderr handler at `PROFILE_RAG_LOG_LEVEL` (default `INFO`). `tests/test_api_logging.py` checks that the warning reaches stderr, also after uvicorn's own logging setup, and that it holds no question, reply, or Pi stderr. `tests/test_api_contract.py` raises each error with a marker string in its message, reply, and stderr, and checks that the marker appears in no response and no log record.
 
 ### Sources
 

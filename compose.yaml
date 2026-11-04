@@ -17,7 +17,7 @@ services:
       POSTGRES_PASSWORD: profile_rag
       POSTGRES_DB: profile_rag
     ports:
-      - "127.0.0.1:5443:5432"
+      - "127.0.0.1:${DB_PORT:-5443}:5432"
     volumes:
       - pgdata:/var/lib/postgresql
       - ./db/init:/docker-entrypoint-initdb.d:ro

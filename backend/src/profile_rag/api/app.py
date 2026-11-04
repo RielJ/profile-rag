@@ -12,9 +12,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from profile_rag import tracing
 from profile_rag.api import health
 from profile_rag.db.pool import create_pool
-from profile_rag.settings import get_settings
+from profile_rag.settings import TracingSettings, get_settings
 
 
 @asynccontextmanager
@@ -29,6 +30,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 
 def create_app() -> FastAPI:
+    # Before any LangChain object is made. Raises TracingRefused, which stops
+    # the server from starting, if LANGSMITH_TRACING=true outside corpus-example.
+    tracing.configure_tracing(TracingSettings(), tracing.corpus_dir_from_env())
     app = FastAPI(
         title="profile-rag",
         version="0.1.0",

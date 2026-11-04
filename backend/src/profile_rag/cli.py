@@ -80,6 +80,8 @@ from there with `uv run --project backend profile-rag ...`.
 import asyncio
 import getpass
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, NoReturn, get_args
@@ -90,10 +92,14 @@ import typer
 from langchain_core.documents import Document
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
+from langchain_core.retrievers import BaseRetriever
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGEngine, PGVectorStore
 from pydantic import ValidationError
 
+from profile_rag import tracing
+from profile_rag.agent.errors import AgentLoopError, GradeParseError, RewriteError
+from profile_rag.agent.graph import build_graph, run_agent
 from profile_rag.corpus import documents, registry, scan, sources_table, splitting
 from profile_rag.corpus.registry import (
     REGISTRY_FILENAME,
@@ -112,7 +118,7 @@ from profile_rag.corpus.splitting import (
     DEFAULT_OVERLAP_WORDS,
     SPLITTER_VERSION,
 )
-from profile_rag.evaluation import ann_compare
+from profile_rag.evaluation import agent_compare, ann_compare
 from profile_rag.evaluation.labels import ResolvedQuestion, resolve_labels
 from profile_rag.evaluation.questions import QuestionFileError, load_questions
 from profile_rag.evaluation.runner import RunConfig, run_evaluation
@@ -121,7 +127,7 @@ from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.pi_chat_model import PiChatModel
 from profile_rag.generation.pi_rpc import PiConfig, PiError, PiProcessError, PiTimeout
 from profile_rag.retrievers.factory import SearchMode, build_retriever, dense_candidates
-from profile_rag.settings import REPO_ROOT, Settings, get_settings
+from profile_rag.settings import REPO_ROOT, Settings, TracingSettings, get_settings
 from profile_rag.vectorstore import hnsw, indexing, store
 from profile_rag.vectorstore.models import DEFAULT_MODEL, MODELS, EmbeddingModel
 from profile_rag.vectorstore.prefixed import EmbeddingError, PrefixedEmbeddings
@@ -152,8 +158,12 @@ def main() -> None:
 
 @app.callback()
 def _root_callback() -> None:
-    # A callback makes Typer treat every command as a subcommand.
-    pass
+    # Runs before every command, so before any LangChain object is made.
+    # It also makes Typer treat every command as a subcommand.
+    try:
+        tracing.configure_tracing(TracingSettings(), tracing.corpus_dir_from_env())
+    except tracing.TracingRefused as error:
+        _fail(str(error))
 
 
 # --- Shared helpers ---------------------------------------------------------
@@ -746,8 +756,8 @@ def search_command(
     settings = get_settings()
     database_url = str(settings.database_url)
     _check_model(model, settings.ollama_url)
-    if not store.table_exists(database_url, model.table_name):
-        _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+    _require_table(database_url, model)
+    _require_traceable(database_url, model)
 
     _warn_low_ef_search(ef_search, mode, k)
     embeddings = _embeddings(model, settings.ollama_url)
@@ -774,12 +784,21 @@ def search_command(
 
 # --- ask ----------------------------------------------------------------------
 #
-# Exit codes: 0 answered or unknown, 2 setup error (the `_fail` code),
-# 3 Pi failed, 4 the model's reply was rejected. A message never contains the
+# Exit codes of `ask` and `agent`: 0 answered or unknown, 2 setup error (the
+# `_fail` code), 3 Pi failed, 4 the model's reply was rejected, 5 the agent
+# graph exceeded its recursion limit (a bug). A message never contains the
 # model's reply: an OutputParserException's text does, so it is not printed.
 
 EXIT_PI_FAILED = 3
 EXIT_REPLY_REJECTED = 4
+EXIT_AGENT_LOOP = 5
+
+QuestionArgument = Annotated[str, typer.Argument(help="The question, in quotes.")]
+AnswerModelOption = Annotated[
+    str, typer.Option("--model", help=f"Embedding model, one of: {', '.join(MODELS)}.")
+]
+AnswerModeOption = Annotated[SearchMode, typer.Option(help="Which retriever to run.")]
+AnswerKOption = Annotated[int, typer.Option("-k", min=1, help="How many chunks to give the model.")]
 
 
 def _pi_model(settings: Settings) -> BaseChatModel:
@@ -813,54 +832,103 @@ def _describe_pi_error(error: PiError) -> str:
 
 @app.command("ask")
 def ask_command(
-    question: Annotated[str, typer.Argument(help="The question, in quotes.")],
-    model_key: Annotated[
-        str,
-        typer.Option("--model", help=f"Embedding model, one of: {', '.join(MODELS)}."),
-    ] = DEFAULT_MODEL,
-    mode: Annotated[SearchMode, typer.Option(help="Which retriever to run.")] = "hybrid",
-    k: Annotated[int, typer.Option("-k", min=1, help="How many chunks to give the model.")] = 8,
+    question: QuestionArgument,
+    model_key: AnswerModelOption = DEFAULT_MODEL,
+    mode: AnswerModeOption = "hybrid",
+    k: AnswerKOption = 8,
     ef_search: EfSearchOption = None,
 ) -> None:
     """Answer a question from the indexed evidence, through Pi, with citations."""
+    with _answer_setup(question, model_key, mode, k, ef_search) as (retriever, settings):
+        chain = build_chain(retriever, _pi_model(settings))
+        with _answer_errors():
+            result = chain.invoke({"question": question})
+    _print_answer(result)
+
+
+@app.command("agent")
+def agent_command(
+    question: QuestionArgument,
+    model_key: AnswerModelOption = DEFAULT_MODEL,
+    mode: AnswerModeOption = "hybrid",
+    k: AnswerKOption = 8,
+    ef_search: EfSearchOption = None,
+) -> None:
+    """Answer a question with the agent graph: grade the evidence, rewrite once if needed."""
+    with _answer_setup(question, model_key, mode, k, ef_search) as (retriever, settings):
+        graph = build_graph(retriever, _pi_model(settings))
+        with _answer_errors():
+            run = run_agent(graph, question, on_node=_print_node)
+    typer.echo("")
+    _print_answer(run.result)
+    typer.echo(f"\nPi calls: {run.pi_calls}, rewrites: {run.rewrites}")
+
+
+def _print_node(node: str, update: dict[str, object]) -> None:
+    """One line per node: its name and counts or labels, never text."""
+    detail = ""
+    if node == "retrieve":
+        docs = update.get("docs")
+        detail = f"{len(docs) if isinstance(docs, list) else 0} chunks"
+    elif node == "grade":
+        detail = str(update.get("grade"))
+    elif node == "rewrite":
+        detail = "question rewritten"
+    elif node == "generate":
+        result = update.get("result")
+        detail = result.answer.root.status if isinstance(result, GroundedAnswer) else "?"
+    pi_calls = update.get("pi_calls")
+    suffix = f" (Pi calls so far: {pi_calls})" if pi_calls is not None else ""
+    typer.echo(f"[{node}] {detail}{suffix}")
+
+
+@contextmanager
+def _answer_setup(
+    question: str, model_key: str, mode: SearchMode, k: int, ef_search: int | None
+) -> Iterator[tuple[BaseRetriever, Settings]]:
+    """Check the inputs, open the store, and yield the retriever and settings."""
     if not question.strip():
         _fail("the question is empty.")
-    model = MODELS.get(model_key)
-    if model is None:
-        _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
+    model = _model(model_key)
     settings = get_settings()
     database_url = str(settings.database_url)
     _check_model(model, settings.ollama_url)
-    if not store.table_exists(database_url, model.table_name):
-        _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+    _require_table(database_url, model)
+    _require_traceable(database_url, model)
 
     _warn_low_ef_search(ef_search, mode, k)
     embeddings = _embeddings(model, settings.ollama_url)
     engine = PGEngine.from_connection_string(url=database_url)
     try:
         search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
-        retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
-        chain = build_chain(retriever, _pi_model(settings))
-        try:
-            result = chain.invoke({"question": question})
-        except EmbeddingError as error:
-            _fail(f"the question: {error.reason}")
-        except PiError as error:
-            _ask_failure(_describe_pi_error(error), EXIT_PI_FAILED)
-        except OutputParserException:
-            _ask_failure(
-                "the model's reply is not a valid answer (not JSON of the required shape).",
-                EXIT_REPLY_REJECTED,
-            )
-        except InventedCitation as error:
-            _ask_failure(
-                f"the model cited chunks it was not given: {', '.join(error.invented)}.",
-                EXIT_REPLY_REJECTED,
-            )
+        yield build_retriever(mode, search_store, k, conninfo=database_url, model=model), settings
     finally:
         asyncio.run(engine.close())
 
-    _print_answer(result)
+
+@contextmanager
+def _answer_errors() -> Iterator[None]:
+    """Turn the errors of an answer run into exit codes. See the exit codes above."""
+    try:
+        yield
+    except EmbeddingError as error:
+        _fail(f"the question: {error.reason}")
+    except PiError as error:
+        _ask_failure(_describe_pi_error(error), EXIT_PI_FAILED)
+    except OutputParserException:
+        _ask_failure(
+            "the model's reply is not a valid answer (not JSON of the required shape).",
+            EXIT_REPLY_REJECTED,
+        )
+    except InventedCitation as error:
+        _ask_failure(
+            f"the model cited chunks it was not given: {', '.join(error.invented)}.",
+            EXIT_REPLY_REJECTED,
+        )
+    except (GradeParseError, RewriteError) as error:
+        _ask_failure(str(error), EXIT_REPLY_REJECTED)
+    except AgentLoopError as error:
+        _ask_failure(str(error), EXIT_AGENT_LOOP)
 
 
 def _print_answer(result: GroundedAnswer) -> None:
@@ -927,6 +995,7 @@ def _eval_inputs(
     database_url = str(settings.database_url)
     _check_model(model, settings.ollama_url)
     _require_table(database_url, model)
+    _require_traceable(database_url, model)
     indexed = store.chunk_ids(database_url, model)
     split = {chunk.metadata["chunk_id"] for chunk in chunks}
     if indexed != split:
@@ -988,6 +1057,79 @@ def eval_command(
         typer.echo(f"wrote {_shown(path)}")
 
 
+# --- compare-agent ------------------------------------------------------------
+
+CompareSet = Literal["dev", "example"]
+
+
+@app.command("compare-agent")
+def compare_agent_command(
+    eval_set: Annotated[
+        CompareSet, typer.Option("--set", help="dev (eval/) or example (eval-example/).")
+    ] = "dev",
+    model_key: AnswerModelOption = DEFAULT_MODEL,
+    mode: AnswerModeOption = "hybrid",
+    k: AnswerKOption = 8,
+    max_pi_calls: Annotated[
+        int | None,
+        typer.Option(
+            "--max-pi-calls",
+            min=agent_compare.WORST_CASE_PI_CALLS,
+            help="Skip the remaining questions once the next one could exceed this many Pi calls.",
+        ),
+    ] = None,
+) -> None:
+    """Answer a question set with the chain and the agent graph, and compare them."""
+    model = _model(model_key)
+    questions, _chunk_count, database_url, ollama_url = _eval_inputs(eval_set, model)
+    settings = get_settings()
+    config = agent_compare.CompareConfig(
+        eval_set, model.key, mode, k, settings.pi_model, max_pi_calls
+    )
+    worst = len(questions) * agent_compare.WORST_CASE_PI_CALLS
+    typer.echo(
+        f"{len(questions)} questions: at most {worst} Pi calls"
+        + (f", capped at {max_pi_calls}" if max_pi_calls is not None else "")
+    )
+
+    def progress(result: agent_compare.QuestionComparison) -> None:
+        typer.echo(
+            f"{result.resolved.question.id}: chain {result.chain.outcome}"
+            f" ({result.chain.pi_calls}), agent {result.agent.outcome}"
+            f" ({result.agent.pi_calls}, rewrites {result.agent.rewrites})"
+        )
+
+    embeddings = _embeddings(model, ollama_url)
+    engine = PGEngine.from_connection_string(url=database_url)
+    try:
+        search_store = store.open_search_store(engine, model, embeddings)
+        retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
+        pi = _pi_model(settings)
+        with _answer_errors():
+            output = agent_compare.compare(
+                questions,
+                build_chain(retriever, pi),
+                build_graph(retriever, pi),
+                max_pi_calls=max_pi_calls,
+                on_question=progress,
+            )
+    finally:
+        asyncio.run(engine.close())
+
+    detail, report = agent_compare.write_outputs(
+        config, output, results_dir=EVAL_RESULTS_DIR, docs_dir=EVAL_DOCS_DIR
+    )
+    for name, summary in (("chain", output.chain), ("agent", output.agent)):
+        typer.echo(
+            f"{name}: answered {summary.answered}, unknown {summary.unknown},"
+            f" rejected {summary.rejected}, Pi calls {summary.pi_calls_total}"
+        )
+    if output.skipped:
+        typer.echo(f"skipped (Pi call cap): {', '.join(output.skipped)}")
+    for path in (detail, report):
+        typer.echo(f"wrote {_shown(path)}")
+
+
 def _shown(path: Path) -> Path:
     """`path` relative to the repository root, if it is inside it."""
     return path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
@@ -1008,6 +1150,30 @@ def _model(model_key: str) -> EmbeddingModel:
 def _require_table(database_url: str, model: EmbeddingModel) -> None:
     if not store.table_exists(database_url, model.table_name):
         _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+
+
+def _require_traceable(database_url: str, model: EmbeddingModel) -> None:
+    """With tracing on, exit unless the model's table holds exactly corpus-example/.
+
+    CORPUS_DIR=corpus-example passes the startup check even when the table
+    was indexed from the real corpus; this checks the data itself.
+    """
+    if not tracing.tracing_enabled():
+        return
+    root = tracing.EXAMPLE_CORPUS
+    try:
+        loaded = documents.load_documents(_load(root), root)
+    except documents.ApprovedSnapshotError as error:
+        _fail(str(error))
+    chunks = splitting.split_documents(
+        loaded, chunk_words=DEFAULT_CHUNK_WORDS, overlap_words=DEFAULT_OVERLAP_WORDS
+    )
+    if store.chunk_ids(database_url, model) != {c.metadata["chunk_id"] for c in chunks}:
+        _fail(
+            f"LANGSMITH_TRACING=true, but {model.table_name} does not hold exactly the"
+            " example corpus. Traces may only come from corpus-example/: run"
+            f" `make index CORPUS_DIR=corpus-example MODEL={model.key}`, or turn tracing off."
+        )
 
 
 def _describe_index(status: hnsw.HnswStatus | None, model: EmbeddingModel) -> str:

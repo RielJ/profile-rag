@@ -58,16 +58,33 @@ class GroundedAnswer:
         return [by_id[cid] for cid in dict.fromkeys(result.citations) if cid in by_id]
 
 
-def build_chain(
-    retriever: Runnable[str, list[Document]], model: BaseChatModel
-) -> Runnable[dict[str, str], GroundedAnswer]:
-    """The chain from `{"question": ...}` to a `GroundedAnswer`. See the module docstring."""
+def build_answerer(model: BaseChatModel) -> Runnable[dict[str, object], GroundedAnswer]:
+    """One model call from `{"question": str, "docs": [Document, ...]}` to a `GroundedAnswer`.
+
+    The prompt, parser, and citation check of the chain, without retrieval.
+    `docs` must not be empty: use `no_evidence_answer()` for that case.
+    The agent graph (agent/graph.py) calls this in its `generate` node.
+    """
     parser = PydanticOutputParser(pydantic_object=Answer)
-    generate = (
+    return (
         RunnablePassthrough.assign(context=lambda inputs: format_evidence(inputs["docs"]))
         | RunnablePassthrough.assign(answer=build_prompt(parser) | model | parser)
         | RunnableLambda(_checked)
     )
+
+
+def no_evidence_answer() -> GroundedAnswer:
+    """The `unknown` answer for an empty retrieval, made without a model call."""
+    return GroundedAnswer(
+        answer=Answer(Unknown(status="unknown", reason=NO_EVIDENCE_REASON)), docs=[]
+    )
+
+
+def build_chain(
+    retriever: Runnable[str, list[Document]], model: BaseChatModel
+) -> Runnable[dict[str, str], GroundedAnswer]:
+    """The chain from `{"question": ...}` to a `GroundedAnswer`. See the module docstring."""
+    generate = build_answerer(model)
     no_evidence = RunnableLambda(_no_evidence)
 
     def route(inputs: dict[str, object]) -> Runnable[dict[str, object], GroundedAnswer]:
@@ -79,9 +96,7 @@ def build_chain(
 
 
 def _no_evidence(_inputs: dict[str, object]) -> GroundedAnswer:
-    return GroundedAnswer(
-        answer=Answer(Unknown(status="unknown", reason=NO_EVIDENCE_REASON)), docs=[]
-    )
+    return no_evidence_answer()
 
 
 def _checked(inputs: dict[str, object]) -> GroundedAnswer:

@@ -6,12 +6,14 @@ parameter name. `scope="session"` builds it once for the whole test run.
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from types import TracebackType
 from uuid import uuid4
 
+import langsmith
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
@@ -27,8 +29,36 @@ from profile_rag.api.app import create_app
 from profile_rag.api.deps import get_pool
 from profile_rag.db.pool import Pool, create_pool
 from profile_rag.settings import get_settings
+from profile_rag.tracing import TRACING_SWITCHES
 from profile_rag.vectorstore import store
 from profile_rag.vectorstore.models import EmbeddingModel
+
+
+def _tracing_off() -> None:
+    """No test sends a trace, whatever the parent environment or .env says.
+
+    Environment variables take precedence over .env, so LANGSMITH_TRACING=false
+    here also overrides a LANGSMITH_TRACING=true in .env. Without an API key,
+    a client could not authenticate either. Tests that turn tracing on
+    (test_tracing.py) inject a client that captures requests instead.
+    """
+    for name in TRACING_SWITCHES:
+        os.environ.pop(name, None)
+    os.environ["LANGSMITH_TRACING"] = "false"
+    for name in ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY", "LANGSMITH_ENDPOINT"):
+        os.environ.pop(name, None)
+    langsmith.configure(client=None, enabled=False)
+
+
+_tracing_off()
+
+
+@pytest.fixture(autouse=True)
+def tracing_stays_off() -> Iterator[None]:
+    """Turn tracing off again after each test, in case a test turned it on."""
+    yield
+    _tracing_off()
+
 
 # Port 9 ("discard") has no database listening, so connections fail fast.
 UNREACHABLE_DSN = "postgresql://nobody:nothing@127.0.0.1:9/none"

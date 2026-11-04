@@ -25,6 +25,12 @@ dependencies = [
     "langchain-postgres==0.0.19",
     # For SQLRecordManager only. index() itself is in langchain-core.
     "langchain-classic>=1.0,<1.1",
+    # Pinned exactly: the agent's recursion_limit (agent/graph.py) was measured
+    # on this release.
+    "langgraph==1.2.19",
+    # Direct dependency of tracing.py, which relies on Client's anonymizer
+    # reaching the run's error field. tests/test_tracing.py checks it.
+    "langsmith>=0.14.15,<0.15",
 ]
 
 # The `profile-rag` command-line entry point.

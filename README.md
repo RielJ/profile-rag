@@ -13,7 +13,7 @@ The backend indexes approved sources into Postgres with pgvector, through LangCh
 | Node | 26 LTS | Runs the frontend. `.node-version` pins it (`fnm install 26`) |
 | pnpm | 12.16.1 | Installs the frontend dependencies |
 | Ollama | Recent | Computes embeddings on the host |
-| Pi | 1.5.0 (tested) | Runs the answer model for `profile-rag ask`, with credentials for the model's provider |
+| Pi | 1.5.0 (tested) | Runs the answer model for `profile-rag ask` and `agent`, with credentials for the model's provider |
 
 ## Set up
 
@@ -83,6 +83,32 @@ The model runs through Pi, as a separate `pi --mode rpc` process for each questi
 
 Exit codes: 0 for an answer or `Unknown.`, 2 for a setup error (no table, Ollama not running), 3 when Pi fails (timeout, crash, or provider error), and 4 when the model's reply is rejected (not valid JSON of the answer shape, or a citation of a chunk it was not given). Error messages never include the model's reply. "Generation" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the prompt, the answer format, and how Pi is isolated.
 
+## Ask with the agent graph
+
+`profile-rag agent` answers the same way, but first has the model grade the retrieved chunks. When they are not relevant, it rewrites the question once and retrieves again. It prints each step as it runs, with counts only, then the answer as `ask` does, and the number of Pi calls:
+
+```sh
+uv --directory backend run profile-rag agent "What web framework did Dana use for the shipment-tracking API?" --mode hybrid -k 8
+```
+
+```text
+[retrieve] 8 chunks
+[grade] relevant (Pi calls so far: 1)
+[generate] answered (Pi calls so far: 2)
+
+According to Dana's resume, ...
+
+Pi calls: 2, rewrites: 0
+```
+
+A question takes 2 Pi calls, or 4 with a rewrite (0 when nothing is retrieved). The options and exit codes are those of `ask`, plus exit code 5 if the graph exceeds its step limit, which means a bug.
+
+`profile-rag compare-agent --set example|dev --model nomic-v15 --mode hybrid -k 3` answers every question of a set with both the chain and the agent. It writes per-question results to `eval/results/` and the comparison to `docs/eval/agent-vs-chain-<set>-<model>.md`. `--max-pi-calls N` skips the remaining questions once the next one could exceed N calls (each question can take up to 5). For now, `ask` stays the default: [`docs/eval/agent-decision.md`](docs/eval/agent-decision.md) gives the reason. "Agent graph" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the graph.
+
+## Tracing
+
+Tracing to LangSmith is off unless `LANGSMITH_TRACING=true` is set in the environment or `.env`. It is only for the fictional example corpus. With tracing on, every command and the API refuse to start (exit code 2) unless `CORPUS_DIR=corpus-example` is set in the environment and `LANGSMITH_API_KEY` is set. Commands that read the database also refuse unless the table holds exactly `corpus-example/`. Traces then contain run names, timings, and the class names of errors, with no inputs, outputs, metadata, or error messages. The tests never trace. "Tracing" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains the rules.
+
 ## Evaluate retrieval
 
 `profile-rag eval` runs a labeled question set through a retriever and reports recall@k and MRR:
@@ -135,4 +161,4 @@ Run `make` with no arguments to list every command.
 
 This repository is public. The real corpus and evaluation data are never committed. See "Corpus policy" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-`profile-rag ask` sends the question and the retrieved chunks to the model provider that `PROFILE_RAG_PI_MODEL` names. Pi runs without session files, so it does not store them under `~/.pi`. See "Pi isolation" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+`profile-rag ask` and `profile-rag agent` send the question and the retrieved chunks to the model provider that `PROFILE_RAG_PI_MODEL` names. Pi runs without session files, so it does not store them under `~/.pi`. See "Pi isolation" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

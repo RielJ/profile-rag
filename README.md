@@ -2,7 +2,7 @@
 
 A question-answering application about Riel's professional experience. It answers only from a reviewed corpus of sources, and each answer cites its sources.
 
-The backend indexes approved sources into Postgres with pgvector, through LangChain and local Ollama embeddings. It retrieves chunks with dense, MMR, or hybrid (dense plus full-text) search. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the pipeline, the modules, the tables, and the corpus policy.
+The backend indexes approved sources into Postgres with pgvector, through LangChain and local Ollama embeddings. It retrieves chunks with dense, MMR, or hybrid (dense plus full-text) search, and measures retrieval with recall@k and MRR on labeled question sets. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the pipeline, the modules, the tables, and the corpus policy.
 
 ## Requirements
 
@@ -57,6 +57,18 @@ uv --directory backend run profile-rag search "Which databases has Dana used?" -
 
 `--mode` is `dense` (the default), `mmr`, or `hybrid`. `--model` selects the table: `nomic-v15` (the default) or `qwen3-06b`.
 
+## Evaluate retrieval
+
+`profile-rag eval` runs a labeled question set through a retriever and reports recall@k and MRR:
+
+```sh
+uv --directory backend run profile-rag eval --set example --model nomic-v15 --mode dense -k 8
+```
+
+`--set` is `example` (fictional questions in `eval-example/dev.jsonl`, over `corpus-example/`), `dev`, or `heldout` (private questions in `eval/`, over `corpus/`). `--model`, `--mode`, and `-k` work as in `search`. Index the set's corpus with the same model first.
+
+The command prints the numbers and writes three files: per-question detail in `eval/results/` (gitignored), a report for the run in `docs/eval/`, and the comparison table for the set, `docs/eval/<set>-comparison.md`. Committed reports contain only numbers and question IDs. "Evaluation" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) gives the question format, the label rule, and the metrics.
+
 To add a source to the corpus, follow [`corpus/README.md`](corpus/README.md). Each source is registered, copied into `corpus/approved/`, and reviewed before it can be indexed.
 
 ## Run the app
@@ -90,7 +102,8 @@ Run `make` with no arguments to list every command.
 | `corpus/` | The real corpus. Git ignores everything except its README |
 | `corpus-example/` | A fictional corpus for tests and demos |
 | `eval/` | Evaluation questions and results. Git ignores everything except its README |
-| `docs/` | Architecture |
+| `eval-example/` | Fictional evaluation questions over `corpus-example/` |
+| `docs/` | Architecture, and evaluation reports in `docs/eval/` |
 
 ## Privacy
 

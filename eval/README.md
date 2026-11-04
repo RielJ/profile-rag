@@ -9,3 +9,5 @@ This folder holds the real evaluation questions and detailed results. Git ignore
 | `results/` | Per-question output, including misses |
 
 Aggregate metrics without question or corpus text go to `../docs/eval/`, which is committed.
+
+Run a set with `profile-rag eval --set dev` (or `heldout`). "Evaluation" in `../docs/ARCHITECTURE.md` gives the question format, the label rule, and the metrics. `../eval-example/dev.jsonl` is a fictional example of the format.

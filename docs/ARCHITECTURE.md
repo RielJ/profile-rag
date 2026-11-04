@@ -1,6 +1,6 @@
 # Architecture
 
-profile-rag answers questions about Riel's professional experience from a reviewed corpus. This page describes the indexing pipeline, the retrieval step, the database tables, and the corpus policy.
+profile-rag answers questions about Riel's professional experience from a reviewed corpus. This page describes the indexing pipeline, the retrieval step, the database tables, the corpus policy, and retrieval evaluation.
 
 ## Pipeline
 
@@ -55,9 +55,14 @@ All paths are under `backend/src/profile_rag/`.
 | `vectorstore/indexing.py` | Runs LangChain `index()` with a record manager per model. |
 | `retrievers/dense.py` | `dense_retriever`, `mmr_retriever`, and the `VISIBLE` filter. |
 | `retrievers/hybrid.py` | `HybridRetriever`: dense and keyword search fused with reciprocal rank fusion. |
+| `retrievers/factory.py` | `build_retriever(mode, store, k)`: the one place that turns a search mode into a retriever. `search` and `eval` both use it. |
+| `evaluation/questions.py` | The JSONL question format, validated with Pydantic. |
+| `evaluation/labels.py` | Resolves each label (source ID and quoted span) to the chunk IDs that contain the span. |
+| `evaluation/metrics.py` | Recall@k, reciprocal rank, and the run summary. |
+| `evaluation/runner.py` | Runs questions through any `BaseRetriever` and writes the detail, the report, and the comparison table. |
 | `db/` | Connection pool and the migration runner for `db/migrations/`. |
 | `api/` | FastAPI application. `GET /api/health` reports database status. |
-| `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, and `search`. |
+| `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, and `eval`. |
 
 ## Tables
 
@@ -96,6 +101,8 @@ The repository is public. The real corpus and evaluation data never enter Git.
 | --- | --- | --- |
 | `corpus/` | Only `README.md` | Real sources, review notes, and private material |
 | `eval/` | Only `README.md` | Evaluation questions and results. They quote and reveal corpus text |
+| `eval-example/` | Yes | Fictional questions over `corpus-example/` |
+| `docs/eval/` | Yes | Evaluation reports: numbers, model, mode, k, sample sizes, and question IDs only |
 | `corpus-example/` | Yes | A fictional profile (Dana Whitlock) for tests and demos |
 
 Every source in `sources.yaml` has one state:
@@ -140,3 +147,85 @@ uv --directory backend run profile-rag search "Which databases has Dana used?" -
 ```
 
 Each output line shows the rank, the cosine distance between the question and the chunk, the `chunk_id`, and the heading path. The distance is the same measure in every mode. It shows where MMR and hybrid search leave the dense order, but it is not the score those modes rank by.
+
+## Evaluation
+
+`profile-rag eval` measures how well a retriever finds the chunks that answer a set of labeled questions:
+
+```sh
+uv --directory backend run profile-rag eval --set example --model nomic-v15 --mode hybrid -k 8
+```
+
+| `--set` | Questions | Corpus |
+| --- | --- | --- |
+| `dev` | `eval/dev.jsonl` (private) | `corpus/` |
+| `heldout` | `eval/heldout.jsonl` (private) | `corpus/` |
+| `example` | `eval-example/dev.jsonl` (fictional) | `corpus-example/` |
+
+```text
+questions.jsonl ──► Pydantic validation (questions.py)
+corpus ──► load approved sources ──► split as `index` does
+                                        │
+labels ──► resolve span -> chunk IDs (labels.py) ──► any label error: stop, exit 2
+                                        │
+chunks_<model> must hold exactly this split, or stop with the `make index` command to run
+                                        │
+build_retriever(mode, store, k) ──► invoke(question) per question ──► metadata["chunk_id"]
+                                        │
+                     recall@k, reciprocal rank (metrics.py)
+                                        │
+        eval/results/<run>.jsonl   docs/eval/<run>.md   docs/eval/<set>-comparison.md
+```
+
+`<run>` is `<set>-<model>-<mode>-k<k>`.
+
+### Question format
+
+One JSON object per line:
+
+```json
+{"id": "ex-08", "question": "Which internal library came out of the queue migration ...?",
+ "expected": [{"source_id": "blog-postgres-queues", "span": "The queue code is now a small internal library, lantern-queue."},
+              {"source_id": "lantern-queue-readme", "span": "At-least-once delivery."}],
+ "tags": ["multi_source"]}
+```
+
+- `id`: unique. Letters, digits, `-`, and `_`. Reports show IDs, so an ID must not quote the question.
+- `expected`: one label per piece of evidence the answer needs. An empty list means the corpus cannot answer the question.
+- `tags`: any of `direct`, `paraphrase`, `multi_source`, `attribution_trap`, `unanswerable`, and `injection`. `unanswerable` is required exactly when `expected` is empty.
+
+### Label rule
+
+A label is a source ID and a span copied verbatim from that source. It names text, not chunk IDs, so labels stay valid when the splitter settings change.
+
+- Whitespace is normalised on both sides. Each run of spaces, tabs, and line breaks becomes one space. Case, punctuation, and Markdown marks must match.
+- A label resolves to every chunk of its source that contains the whole span. A span in the overlap of two chunks resolves to both, and either one counts.
+- A span that crosses a chunk boundary is a label error. So is a span that includes a heading line, because headings are metadata and not chunk text. Shorten the span to the sentence that proves the answer.
+- A span the source does not contain, or a source with no chunks (unknown, not approved, or empty), is a label error.
+
+The command prints each label error as question ID, label position, source ID, and reason, never the span. Any error stops the run, so a broken label cannot silently lower recall.
+
+A label names one source. When two sources hold the same text, a question about it finds only the labeled source. Label the source you expect, or avoid such facts.
+
+### Metrics
+
+- Recall@k of a question: the share of its labels with at least one chunk in the top k. A two-label question that finds one label scores 0.5.
+- Reciprocal rank: 1 / the rank of the first top-k chunk that belongs to any label, or 0.
+- Recall@k and MRR of a run: means over answerable questions. The report gives `n`, the number of answerable questions.
+- Unanswerable questions have no relevant chunk. They are left out of both means and counted separately. Whether the answer step refuses them is measured later, with generation.
+- A miss is a question with recall@k below 1. Reports list misses by ID.
+
+Each report also breaks the numbers down by tag. A question with several tags counts under each of them.
+
+### Outputs and privacy
+
+- `eval/results/<run>.jsonl` (gitignored): one line per question with the question text, the relevant chunk IDs, and the ranked results with `chunk_id`, `source_id`, `heading_path`, and whether each was relevant. Use it to study misses.
+- `docs/eval/<run>.md` (committed): the run's numbers, the per-tag table, the miss IDs, and a JSON block of the same numbers.
+- `docs/eval/<set>-comparison.md` (committed): one row per run of the set (model, mode, k, recall@k, MRR, n, unanswerable count, miss IDs). It is rebuilt from the JSON blocks after every run. Text below the line `<!-- Notes below this line are kept when the table is rebuilt. -->` is kept.
+
+Committed files hold no question, span, or chunk text. `backend/tests/test_runner.py` checks this for the generated files.
+
+### Results so far
+
+[`docs/eval/example-comparison.md`](eval/example-comparison.md) compares both models and all three modes on the example set. The example corpus has 15 chunks and 12 answerable questions, too small to choose a model. The default model is chosen from the dev set on approved sources, then checked once on the held-out set.
+

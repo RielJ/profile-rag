@@ -14,8 +14,12 @@ import psycopg
 from langchain_core.embeddings import Embeddings
 from langchain_postgres import Column, PGEngine, PGVectorStore
 from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig
+from psycopg import sql
 
-from profile_rag.vectorstore.models import EmbeddingModel
+from profile_rag.vectorstore.models import MODELS, EmbeddingModel
+
+# The only tables `chunk_ids` reads. Table names come from code, not input.
+TABLE_NAMES = frozenset(model.table_name for model in MODELS.values())
 
 # Metadata keys that get their own NOT NULL text column. Every other key of a
 # chunk's metadata (title, url, heading_path, ordinal) goes to the JSON column
@@ -40,6 +44,21 @@ def table_exists(conninfo: str, table_name: str) -> bool:
     with psycopg.connect(conninfo) as conn:
         row = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table_name,)).fetchone()
     return bool(row and row[0])
+
+
+def chunk_ids(conninfo: str, model: EmbeddingModel) -> set[str]:
+    """The `chunk_id` of every row in the model's table.
+
+    The table name comes from `models.MODELS`, never from user input, and is
+    quoted as an identifier.
+    """
+    if model.table_name not in TABLE_NAMES:
+        raise ValueError(f"unknown chunk table {model.table_name!r}")
+    with psycopg.connect(conninfo) as conn:
+        rows = conn.execute(
+            sql.SQL("SELECT chunk_id FROM {}").format(sql.Identifier(model.table_name))
+        )
+        return {row[0] for row in rows}
 
 
 def _hybrid_config(model: EmbeddingModel) -> HybridSearchConfig:

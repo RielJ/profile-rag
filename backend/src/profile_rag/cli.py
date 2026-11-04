@@ -49,6 +49,17 @@ between the question and the chunk, the `chunk_id`, and the heading path.
 The distance is the same measure in every mode, so it shows where MMR and
 hybrid search leave the dense order. It is not the score a mode ranks by.
 
+Evaluate retrieval:
+
+    profile-rag eval --set dev|heldout|example [--model nomic-v15] [--mode dense|hybrid|mmr] [-k 8]
+
+It loads the set's questions (evaluation/questions.py), resolves each label
+to chunk IDs against a fresh split of the set's corpus (evaluation/labels.py)
+and stops on any label error. It checks that the model's table holds exactly
+that split, runs every question through the same retriever `search` uses,
+and writes per-question detail to eval/results/ and the aggregate report and
+comparison table to docs/eval/ (evaluation/runner.py).
+
 `uv --directory backend run ...` runs in backend/, so relative paths are
 relative to backend/. To use paths relative to the repository root, run
 from there with `uv run --project backend profile-rag ...`.
@@ -65,7 +76,6 @@ import ollama
 import psycopg
 import typer
 from langchain_core.documents import Document
-from langchain_core.retrievers import BaseRetriever
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGEngine, PGVectorStore
 from pydantic import ValidationError
@@ -88,7 +98,10 @@ from profile_rag.corpus.splitting import (
     DEFAULT_OVERLAP_WORDS,
     SPLITTER_VERSION,
 )
-from profile_rag.retrievers import dense, hybrid
+from profile_rag.evaluation.labels import resolve_labels
+from profile_rag.evaluation.questions import QuestionFileError, load_questions
+from profile_rag.evaluation.runner import RunConfig, run_evaluation
+from profile_rag.retrievers.factory import SearchMode, build_retriever
 from profile_rag.settings import REPO_ROOT, get_settings
 from profile_rag.vectorstore import indexing, store
 from profile_rag.vectorstore.models import DEFAULT_MODEL, MODELS, EmbeddingModel
@@ -655,30 +668,6 @@ def index_command(
 
 # --- search -------------------------------------------------------------------
 
-SearchMode = Literal["dense", "hybrid", "mmr"]
-
-# Candidates each search looks at before it keeps `k`: MMR's `fetch_k`, and
-# hybrid search's dense and keyword lists. Never fewer than `k`.
-CANDIDATES = 20
-MMR_LAMBDA = 0.5
-
-
-def _retriever(mode: SearchMode, search_store: PGVectorStore, k: int) -> BaseRetriever:
-    candidates = max(CANDIDATES, k)
-    if mode == "dense":
-        return dense.dense_retriever(search_store, k=k, filter=dense.VISIBLE)
-    if mode == "mmr":
-        return dense.mmr_retriever(
-            search_store, k=k, fetch_k=candidates, lambda_mult=MMR_LAMBDA, filter=dense.VISIBLE
-        )
-    return hybrid.HybridRetriever(
-        store=search_store,
-        k=k,
-        k_dense=candidates,
-        k_keyword=candidates,
-        filter=dense.VISIBLE,
-    )
-
 
 def _distances(search_store: PGVectorStore, question: str, chunks: list[Document]) -> list[float]:
     """The cosine distance from the question to each chunk, in the order of `chunks`."""
@@ -715,7 +704,7 @@ def search_command(
     try:
         search_store = store.open_search_store(engine, model, embeddings)
         try:
-            chunks = _retriever(mode, search_store, k).invoke(question)
+            chunks = build_retriever(mode, search_store, k).invoke(question)
             distances = _distances(search_store, question, chunks) if chunks else []
         except EmbeddingError as error:
             _fail(f"the question: {error.reason}")
@@ -729,6 +718,104 @@ def search_command(
         heading_path: list[str] = chunk.metadata.get("heading_path") or []
         path = " > ".join(heading_path) or "(before the first heading)"
         typer.echo(f"{rank:>4}  {distance:>8.4f}  {chunk.metadata['chunk_id']}  {path}")
+
+
+# --- eval ---------------------------------------------------------------------
+
+EvalSet = Literal["dev", "heldout", "example"]
+
+# Question file and corpus root of each set. The example set is fictional and
+# committed; the others are private and gitignored.
+EVAL_SETS: dict[str, tuple[Path, Path]] = {
+    "dev": (REPO_ROOT / "eval" / "dev.jsonl", DEFAULT_CORPUS),
+    "heldout": (REPO_ROOT / "eval" / "heldout.jsonl", DEFAULT_CORPUS),
+    "example": (REPO_ROOT / "eval-example" / "dev.jsonl", REPO_ROOT / "corpus-example"),
+}
+EVAL_RESULTS_DIR = REPO_ROOT / "eval" / "results"
+EVAL_DOCS_DIR = REPO_ROOT / "docs" / "eval"
+
+
+@app.command("eval")
+def eval_command(
+    eval_set: Annotated[
+        EvalSet,
+        typer.Option("--set", help="dev or heldout (eval/), or example (eval-example/)."),
+    ] = "dev",
+    model_key: Annotated[
+        str,
+        typer.Option("--model", help=f"One of: {', '.join(MODELS)}."),
+    ] = DEFAULT_MODEL,
+    mode: Annotated[SearchMode, typer.Option(help="Which retriever to run.")] = "dense",
+    k: Annotated[int, typer.Option("-k", min=1, help="How many chunks each question gets.")] = 8,
+) -> None:
+    """Measure recall@k and MRR of a question set, and write the reports."""
+    model = MODELS.get(model_key)
+    if model is None:
+        _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
+    questions_path, root = EVAL_SETS[eval_set]
+    try:
+        questions = load_questions(questions_path)
+    except QuestionFileError as error:
+        _fail(str(error))
+
+    current = _load(root)
+    try:
+        loaded = documents.load_documents(current, root)
+    except documents.ApprovedSnapshotError as error:
+        _fail(str(error))
+    chunks = splitting.split_documents(
+        loaded, chunk_words=DEFAULT_CHUNK_WORDS, overlap_words=DEFAULT_OVERLAP_WORDS
+    )
+    resolution = resolve_labels(questions, chunks, loaded)
+    if resolution.errors:
+        for error in resolution.errors:
+            typer.echo(error.describe(), err=True)
+        _fail(f"{len(resolution.errors)} label errors in {questions_path.name}. Fix the spans.")
+
+    settings = get_settings()
+    database_url = str(settings.database_url)
+    _check_model(model, settings.ollama_url)
+    if not store.table_exists(database_url, model.table_name):
+        _fail(f"no table {model.table_name}. Run `profile-rag index --model {model.key}` first.")
+    indexed = store.chunk_ids(database_url, model)
+    split = {chunk.metadata["chunk_id"] for chunk in chunks}
+    if indexed != split:
+        _fail(
+            f"{model.table_name} does not hold this set's corpus ({root.name}/):"
+            f" {len(split - indexed)} chunks missing, {len(indexed - split)} extra."
+            f" Run `make index CORPUS_DIR={root.name} MODEL={model.key}` first."
+        )
+
+    config = RunConfig(eval_set, model.key, mode, k, len(chunks))
+    embeddings = _embeddings(model, settings.ollama_url)
+    engine = PGEngine.from_connection_string(url=database_url)
+    try:
+        search_store = store.open_search_store(engine, model, embeddings)
+        retriever = build_retriever(mode, search_store, k)
+        try:
+            output = run_evaluation(
+                retriever,
+                resolution.questions,
+                config,
+                results_dir=EVAL_RESULTS_DIR,
+                docs_dir=EVAL_DOCS_DIR,
+            )
+        except EmbeddingError as error:
+            _fail(f"a question: {error.reason}")
+    finally:
+        asyncio.run(engine.close())
+
+    summary = output.summary
+    recall = "n/a" if summary.recall is None else f"{summary.recall:.3f}"
+    mrr = "n/a" if summary.mrr is None else f"{summary.mrr:.3f}"
+    typer.echo(
+        f"{config.name}: recall@{k} {recall}, MRR {mrr}, n {summary.n},"
+        f" unanswerable {summary.unanswerable}"
+    )
+    typer.echo(f"misses: {', '.join(summary.misses) or 'none'}")
+    for path in (output.detail_path, output.report_path, output.comparison_path):
+        shown = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+        typer.echo(f"wrote {shown}")
 
 
 if __name__ == "__main__":

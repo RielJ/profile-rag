@@ -35,17 +35,16 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-import ollama
 from pydantic import ValidationError
 
 from profile_rag.corpus import registry
 from profile_rag.corpus.registry import REGISTRY_FILENAME, RegistryError
 from profile_rag.settings import Settings, get_settings
+from profile_rag.vectorstore import ollama_embeddings
 from profile_rag.vectorstore.models import MODELS, EmbeddingModel
+from profile_rag.vectorstore.ollama_embeddings import DigestLister
 
 PortProbe = Callable[[int], bool]
-DigestLister = Callable[[str], dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -71,19 +70,6 @@ def port_in_use(port: int) -> bool:
         except OSError:
             continue  # no IPv6 on this machine
     return False
-
-
-def ollama_digests(base_url: str) -> dict[str, str]:
-    """Tag to digest of every model Ollama has, as cli.py's `_ollama_digests`.
-
-    Raises ConnectionError if Ollama is down.
-    """
-    listed = ollama.Client(host=base_url, timeout=5).list()
-    return {
-        entry.model: (entry.digest or "").removeprefix("sha256:")
-        for entry in listed.models
-        if entry.model
-    }
 
 
 def check_database_url(settings: Settings, db_port: int) -> list[str]:
@@ -116,26 +102,10 @@ def check_ports(ports: Ports, in_use: PortProbe = port_in_use) -> list[str]:
 
 
 def check_ollama(
-    model: EmbeddingModel, base_url: str, list_digests: DigestLister = ollama_digests
+    model: EmbeddingModel, base_url: str, list_digests: DigestLister | None = None
 ) -> list[str]:
-    try:
-        digests = list_digests(base_url)
-    except OSError, ollama.ResponseError, httpx.HTTPError:  # ConnectionError is an OSError
-        return [
-            f"Ollama does not answer at {base_url}. Start it (`ollama serve`, or open the"
-            " Ollama app), or set OLLAMA_URL in .env."
-        ]
-    installed = digests.get(model.ollama_tag)
-    if installed is None:
-        return [f"Ollama has no {model.ollama_tag}. Run `ollama pull {model.ollama_tag}`."]
-    if installed != model.digest:
-        return [
-            f"Ollama's {model.ollama_tag} has digest {installed[:12]}, but"
-            f" vectorstore/models.py expects {model.digest[:12]}. Run"
-            f" `ollama pull {model.ollama_tag}`; if the digest still differs, the tag now"
-            " points at other weights (see vectorstore/models.py)."
-        ]
-    return []
+    problem = ollama_embeddings.model_problem(model, base_url, list_digests)
+    return [problem] if problem else []
 
 
 def check_pi(pi_bin: str) -> list[str]:
@@ -185,7 +155,7 @@ def run_checks(
     ports: Ports,
     *,
     in_use: PortProbe = port_in_use,
-    list_digests: DigestLister = ollama_digests,
+    list_digests: DigestLister | None = None,
 ) -> list[str]:
     return [
         *check_database_url(settings, ports.db),

@@ -12,6 +12,7 @@ import pytest
 from profile_rag import demo_check
 from profile_rag.demo_check import Ports, check_corpus, check_ports, run_checks
 from profile_rag.settings import REPO_ROOT, Settings
+from profile_rag.vectorstore import ollama_embeddings
 from profile_rag.vectorstore.models import NOMIC_V15
 
 EXAMPLE = REPO_ROOT / "corpus-example"
@@ -135,7 +136,7 @@ def test_main_prints_problems_and_exits_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(demo_check, "port_in_use", no_port_in_use)
-    monkeypatch.setattr(demo_check, "ollama_digests", ollama_down)
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", ollama_down)
     args = ["--model", "nomic-v15", "--root", str(tmp_path)]
     ports = ["--db-port", "5443", "--api-port", "8000", "--frontend-port", "5173"]
     code = demo_check.main([*args, *ports, "--db-running"])

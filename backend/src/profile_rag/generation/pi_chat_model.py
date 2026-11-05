@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from profile_rag.generation.pi_rpc import PiConfig, run_prompt
+from profile_rag.settings import Settings
 
 ROLE_NAMES = {"system": "SYSTEM", "human": "USER", "ai": "ASSISTANT"}
 
@@ -76,3 +77,13 @@ class PiChatModel(BaseChatModel):
             },
         )
         return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+def from_settings(settings: Settings) -> PiChatModel:
+    """The Pi chat model that `.env` configures: model, Pi binary, and timeout."""
+    config = PiConfig(
+        model=settings.pi_model,
+        executable=(settings.pi_bin,),
+        timeout=settings.pi_timeout_seconds,
+    )
+    return PiChatModel(config=config)

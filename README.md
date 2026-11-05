@@ -91,7 +91,7 @@ uv run profile-rag agent "What web framework did Dana use for the shipment-track
 - `ask` retrieves chunks, gives them to the answer model, and prints the answer and its citations. It makes one Pi call. If the evidence does not answer the question, it prints `Unknown.` and the reason.
 - `agent` first has the model grade the retrieved chunks, and rewrites the question once if they are not relevant. It makes 2 Pi calls, or 4 with a rewrite. The API and `ask` use the plain chain. [`docs/eval/agent-decision.md`](docs/eval/agent-decision.md) gives the reason.
 
-The exit codes of `ask` and `agent` are 0 for an answer or `Unknown.`, 2 for a setup error (no table, Ollama not running), 3 when Pi fails, and 4 when the model's reply is rejected (not the answer format, or a citation of a chunk it was not given). `agent` also exits with 5 if the graph exceeds its step limit, which means a bug.
+The exit codes of `ask` and `agent` are 0 for an answer or `Unknown.`, 2 for a setup error (no table, Ollama not running) or a failed evidence search, 3 when Pi fails, and 4 when the model's reply is rejected (not the answer format, or a citation of a chunk it was not given). `agent` also exits with 5 if the graph exceeds its step limit, which means a bug.
 
 Run `uv run profile-rag --help` for every command, including `index`, `eval`, `compare-agent`, `hnsw`, and `corpus`. "Index and search", "Generation", and "Agent graph" in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explain them.
 
@@ -135,6 +135,31 @@ The answer names the attribution ("According to Dana's resume, ..."), so the app
 ## Use your own corpus
 
 1. Register, copy, and review each source with `profile-rag corpus add`, `corpus snapshot`, and `corpus review`. [`corpus/README.md`](corpus/README.md) gives the steps. A source moves from `candidate` to `in_review` to `approved` (or `rejected`), and only approved sources are indexed. Approval records the file's SHA-256 hash. If the file changes later, the approval is stale, and `index` and `make demo` stop until you review the source again.
+
+   `corpus review` with no ID starts a terminal session over every source in review and every stale approval. Each source prints its contents in the terminal (findings marked, secrets masked), then the session asks the checklist questions and then offers to approve. A `n` anywhere brings up a menu to view, edit, reject, or skip. Approval needs a `y` to every checklist item for the file's current content, and the answers go into the audit record in `reviews/`. Quitting keeps the decisions already made. For example (inputs after each prompt; abridged):
+
+   ```text
+   $ uv run profile-rag corpus --root ../corpus-example review
+   [1/1] lantern-queue-readme (in_review)
+     kind: github  attribution: project_doc  visibility: public  revision: 3f9a1c2e7b4d…
+     file: approved/lantern-queue-readme.md  sha256: b046b1f5507e…
+     findings: none. That does not make the file safe; read it in full.
+
+   --- approved/lantern-queue-readme.md ---
+   (the file, with line numbers)
+   --- end of approved/lantern-queue-readme.md (36 lines) ---
+
+   Checklist for lantern-queue-readme:
+   1/5 Is the content public, or sanitized into a version any visitor could see? [y/n]: y
+   ...
+   5/5 Would you be comfortable with an answer quoting any sentence of it verbatim? [y/n]: y
+   Every item answered yes. [a]pprove is available.
+   Approve lantern-queue-readme? [y/n]: y
+   lantern-queue-readme is approved.
+
+   Approved 1, rejected 0, skipped 0. Remaining: in_review 0, stale 0.
+   ```
+
 2. Run the demo on that corpus:
 
    ```sh

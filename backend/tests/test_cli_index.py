@@ -1,6 +1,7 @@
 """Tests for cli.py: `profile-rag index`.
 
-No Ollama: the tests replace `cli._ollama_digests` and `cli._embeddings`, so
+No Ollama: the tests replace `ollama_embeddings.ollama_digests` and
+`ollama_embeddings.for_model`, so
 the digest check sees a fixed list and the vectors come from
 `DeterministicFakeEmbedding`. The database is a throwaway one with every
 migration applied.
@@ -18,6 +19,7 @@ from typer.testing import CliRunner, Result
 from profile_rag import cli
 from profile_rag.db.migrate import migrate
 from profile_rag.settings import get_settings
+from profile_rag.vectorstore import ollama_embeddings
 from profile_rag.vectorstore.models import NOMIC_V15, EmbeddingModel
 from profile_rag.vectorstore.prefixed import EmbeddingError
 
@@ -43,7 +45,7 @@ def digests(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     def listed(base_url: str) -> dict[str, str]:
         return pulled
 
-    monkeypatch.setattr(cli, "_ollama_digests", listed)
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", listed)
     return pulled
 
 
@@ -52,7 +54,7 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     def make(model: EmbeddingModel, base_url: str) -> Embeddings:
         return DeterministicFakeEmbedding(size=model.dimensions)
 
-    monkeypatch.setattr(cli, "_embeddings", make)
+    monkeypatch.setattr(ollama_embeddings, "for_model", make)
 
 
 def run(*args: str) -> Result:
@@ -126,10 +128,10 @@ def test_ollama_not_running_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None
     def refuse(base_url: str) -> dict[str, str]:
         raise ConnectionError("Failed to connect to Ollama.")
 
-    monkeypatch.setattr(cli, "_ollama_digests", refuse)
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", refuse)
     result = run("--root", str(EXAMPLE_ROOT))
     assert result.exit_code == 2
-    assert "cannot reach Ollama at http://ollama.test" in result.output
+    assert "Ollama does not answer at http://ollama.test" in result.output
 
 
 # --- Indexing -------------------------------------------------------------------
@@ -187,7 +189,7 @@ def test_an_embedding_error_names_the_chunk(database: str, monkeypatch: pytest.M
     def make(model: EmbeddingModel, base_url: str) -> Embeddings:
         return Refuses(size=model.dimensions)
 
-    monkeypatch.setattr(cli, "_embeddings", make)
+    monkeypatch.setattr(ollama_embeddings, "for_model", make)
     result = run("--root", str(EXAMPLE_ROOT))
     assert result.exit_code == 2
     assert "error: chunk " in result.output

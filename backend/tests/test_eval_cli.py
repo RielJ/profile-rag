@@ -1,6 +1,7 @@
 """Tests for cli.py: `profile-rag eval`.
 
-No Ollama: the tests replace `cli._ollama_digests` and `cli._embeddings`, as
+No Ollama: the tests replace `ollama_embeddings.ollama_digests` and
+`ollama_embeddings.for_model`, as
 test_cli_search.py does. The question file and the output folders are
 temporary; the corpus is corpus-example/, split as `index` splits it, and
 written to a throwaway database with the `fill_search_table` fixture.
@@ -22,6 +23,7 @@ from typer.testing import CliRunner, Result
 from profile_rag import cli
 from profile_rag.corpus import documents, registry, splitting
 from profile_rag.settings import get_settings
+from profile_rag.vectorstore import ollama_embeddings
 from profile_rag.vectorstore.models import NOMIC_V15, EmbeddingModel
 
 FillSearchTable = Callable[[str, EmbeddingModel, Embeddings, list[Document]], None]
@@ -99,8 +101,8 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     def make(model: EmbeddingModel, base_url: str) -> Embeddings:
         return DeterministicFakeEmbedding(size=model.dimensions)
 
-    monkeypatch.setattr(cli, "_ollama_digests", listed)
-    monkeypatch.setattr(cli, "_embeddings", make)
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", listed)
+    monkeypatch.setattr(ollama_embeddings, "for_model", make)
 
 
 def run(*args: str) -> Result:

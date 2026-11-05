@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typer.testing import CliRunner, Result
 
 from profile_rag import cli
-from profile_rag.corpus import registry
+from profile_rag.corpus import registry, review_session
 from profile_rag.corpus.registry import RegistryError
 
 PROBE_ENTRY = {
@@ -20,6 +20,17 @@ PROBE_ENTRY = {
     "visibility": "public",
     "state": "candidate",
 }
+PROBE_ARGS = (
+    "probe",
+    "--kind",
+    "note",
+    "--title",
+    "Probe",
+    "--attribution",
+    "self_report",
+    "--visibility",
+    "public",
+)
 
 
 @pytest.fixture
@@ -75,7 +86,7 @@ def entries(root: Path) -> dict[str, dict[str, object]]:
 def approve_resume(root: Path, resume: Path) -> None:
     add_resume(root, resume)
     ok(root, "snapshot", "resume-2026")
-    ok(root, "review", "resume-2026", "--approve", "--by", "tester")
+    ok(root, "review", "resume-2026", "--approve", "--checklist-confirmed", "--by", "tester")
 
 
 # --- add ----------------------------------------------------------------------
@@ -186,6 +197,9 @@ def test_unknown_id_is_an_error(root: Path) -> None:
 # --- review -------------------------------------------------------------------
 
 
+YES_TO_ALL = "y\n" * len(review_session.CHECKLIST)
+
+
 def test_approve_records_hash_reviewer_and_time(root: Path, resume: Path) -> None:
     approve_resume(root, resume)
 
@@ -198,18 +212,48 @@ def test_approve_records_hash_reviewer_and_time(root: Path, resume: Path) -> Non
     record = (root / "reviews" / "resume-2026.md").read_text()
     assert " approve\n" in record
     assert "- reviewer: tester" in record
+    assert "- checklist: confirmed by flag" in record
 
 
-def test_review_shows_findings_and_the_checklist(root: Path, resume: Path) -> None:
+def test_approve_flag_needs_checklist_confirmed(root: Path, resume: Path) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+
+    result = run(root, "review", "resume-2026", "--approve", "--by", "tester")
+
+    assert result.exit_code == 2
+    assert "--checklist-confirmed" in result.output
+    assert entries(root)["resume-2026"]["state"] == "in_review"
+    assert not (root / "reviews").exists()
+
+
+@pytest.mark.parametrize("flag", [["--approve", "--checklist-confirmed"], ["--reject", "why"]])
+def test_decision_flags_need_an_id(root: Path, resume: Path, flag: list[str]) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+
+    result = run(root, "review", *flag)
+
+    assert result.exit_code == 2
+    assert "need an ID" in result.output
+    assert entries(root)["resume-2026"]["state"] == "in_review"
+
+
+def test_review_shows_a_findings_summary_without_the_match(root: Path, resume: Path) -> None:
     resume.write_text("# Resume\n\nCall +63 917 555 0100.\n")
     add_resume(root, resume)
     ok(root, "snapshot", "resume-2026")
 
-    result = ok(root, "review", "resume-2026", input="skip\n")
+    result = ok(root, "review", "resume-2026", input="n\ns\n")
 
-    assert "3:6 phone: +63 917 555 0100" in result.output
-    assert "Is the attribution category correct?" in result.output
-    assert "No change." in result.output
+    assert "[1/1] resume-2026 (in_review)" in result.output
+    header = result.output.split("--- approved/resume-2026.md ---")[0]
+    assert "findings: phone 3:6" in header
+    # The header names the rule and position only. The file view that follows
+    # shows personal data as-is (only secrets are masked) so you can judge it.
+    assert "555 0100" not in header
+    assert "Skipped; no change." in result.output
+    assert "Approved 0, rejected 0, skipped 1. Remaining: in_review 1, stale 0." in result.output
     assert entries(root)["resume-2026"]["state"] == "in_review"
     assert not (root / "reviews").exists()
 
@@ -219,35 +263,94 @@ def test_review_record_never_contains_the_matched_secret(root: Path, resume: Pat
     resume.write_text(f"token {token}\n")
     add_resume(root, resume)
     ok(root, "snapshot", "resume-2026")
-    ok(root, "review", "resume-2026", "--reject", "contains a token", "--by", "tester")
+    result = ok(root, "review", "resume-2026", "--reject", "contains a token", "--by", "tester")
 
     record = (root / "reviews" / "resume-2026.md").read_text()
     assert "github_token 1:7" in record
     assert token not in record
+    assert token not in result.output
 
 
-def test_interactive_approve(root: Path, resume: Path) -> None:
-    add_resume(root, resume)
-    ok(root, "snapshot", "resume-2026")
-    ok(root, "review", "resume-2026", "--by", "tester", input="approve\n")
-    assert entries(root)["resume-2026"]["state"] == "approved"
-
-
-def test_interactive_review_asks_again_after_an_unknown_answer(root: Path, resume: Path) -> None:
+def test_interactive_approve_after_the_checklist(root: Path, resume: Path) -> None:
     add_resume(root, resume)
     ok(root, "snapshot", "resume-2026")
 
-    result = ok(root, "review", "resume-2026", "--by", "tester", input="a\n Approve \n")
+    # Guided: the file, then the checklist, then "Approve resume-2026? [y/n]".
+    ok(root, "review", "resume-2026", "--by", "tester", input=f"{YES_TO_ALL}y\n")
 
-    assert "Type one of: approve, reject, skip." in result.output
     assert entries(root)["resume-2026"]["state"] == "approved"
+    record = (root / "reviews" / "resume-2026.md").read_text()
+    for question in review_session.CHECKLIST:
+        assert f"  - yes: {question}" in record
+    assert "- edited during review: no" in record
+
+
+def test_review_shows_the_file_before_the_checklist(root: Path, resume: Path) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+
+    result = ok(root, "review", "resume-2026", input="n\ns\n")
+
+    start = result.output.index("--- approved/resume-2026.md ---")
+    shown = result.output.index("3 | Backend engineer.")
+    end = result.output.index("--- end of approved/resume-2026.md (3 lines) ---")
+    assert start < shown < end < result.output.index("1/5 ")
+    assert "Checklist for resume-2026:" in result.output
+
+
+def test_interactive_view_prints_the_file_again(root: Path, resume: Path) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+
+    result = ok(root, "review", "resume-2026", input="n\nv\ns\n")
+
+    assert result.output.count("3 | Backend engineer.") == 2
+
+
+def test_interactive_edit_runs_the_editor(
+    root: Path, resume: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+    editor = tmp_path / "editor.sh"
+    editor.write_text('#!/bin/sh\nprintf "# Resume\\n\\nEdited.\\n" > "$1"\n')
+    editor.chmod(0o755)
+    monkeypatch.setenv("VISUAL", str(editor))
+
+    result = ok(root, "review", "resume-2026", "--by", "t", input=f"n\ne\n{YES_TO_ALL}y\n")
+
+    assert "Content changed" in result.output
+    snapshot = root / "approved" / "resume-2026.md"
+    assert snapshot.read_text() == "# Resume\n\nEdited.\n"
+    assert entries(root)["resume-2026"]["content_sha256"] == registry.file_sha256(snapshot)
+    assert "- edited during review: yes" in (root / "reviews" / "resume-2026.md").read_text()
+
+
+def test_end_of_input_stops_without_a_traceback(root: Path, resume: Path) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+
+    result = ok(root, "review", "resume-2026", input="y\n")
+
+    assert "Stopped (interrupted). Decisions made so far are saved." in result.output
+    assert entries(root)["resume-2026"]["state"] == "in_review"
+
+
+def test_interactive_review_asks_again_after_an_unknown_key(root: Path, resume: Path) -> None:
+    add_resume(root, resume)
+    ok(root, "snapshot", "resume-2026")
+
+    result = ok(root, "review", "resume-2026", input="n\nx\n Skip \n")
+
+    assert "Type one of: v, e, c, a, r, s, q." in result.output
+    assert "Skipped; no change." in result.output
 
 
 def test_interactive_reject_asks_again_for_a_blank_reason(root: Path, resume: Path) -> None:
     add_resume(root, resume)
     ok(root, "snapshot", "resume-2026")
 
-    result = ok(root, "review", "resume-2026", input="reject\n   \nnot my text\n")
+    result = ok(root, "review", "resume-2026", input="n\nr\n   \nnot my text\n")
 
     assert "A rejection needs a reason." in result.output
     assert entries(root)["resume-2026"]["rejection_reason"] == "not my text"
@@ -267,7 +370,7 @@ def test_reject_flag_needs_a_reason(root: Path, resume: Path) -> None:
 def test_interactive_reject_asks_for_a_reason(root: Path, resume: Path) -> None:
     add_resume(root, resume)
     ok(root, "snapshot", "resume-2026")
-    ok(root, "review", "resume-2026", input="reject\nnot my text\n")
+    ok(root, "review", "resume-2026", input="n\nreject\nnot my text\n")
 
     entry = entries(root)["resume-2026"]
     assert entry["state"] == "rejected"
@@ -278,7 +381,7 @@ def test_interactive_reject_asks_for_a_reason(root: Path, resume: Path) -> None:
 
 def test_review_needs_a_snapshot_first(root: Path) -> None:
     add_resume(root)
-    result = run(root, "review", "resume-2026", "--approve")
+    result = run(root, "review", "resume-2026", "--approve", "--checklist-confirmed")
     assert result.exit_code == 2
     assert "corpus snapshot resume-2026" in result.output
 
@@ -289,6 +392,28 @@ def test_review_refuses_approve_and_reject_together(root: Path, resume: Path) ->
     result = run(root, "review", "resume-2026", "--approve", "--reject", "why")
     assert result.exit_code == 2
     assert "not both" in result.output
+
+
+def test_review_without_an_id_walks_the_queue(root: Path, resume: Path) -> None:
+    approve_resume(root, resume)
+    ok(root, "add", *PROBE_ARGS)
+    probe = resume.with_name("probe.md")
+    probe.write_text("# Probe\n")
+    ok(root, "snapshot", "probe", "--from", str(probe))
+    (root / "approved" / "resume-2026.md").write_text("# Resume\n\nChanged.\n")
+
+    result = ok(root, "review", "--by", "t", input="n\nr\nnot yet\nn\ns\n")
+
+    assert "[1/2] probe (in_review)" in result.output
+    assert "[2/2] resume-2026 (approved, but the file changed since approval)" in result.output
+    assert "Approved 0, rejected 1, skipped 1. Remaining: in_review 0, stale 1." in result.output
+    assert entries(root)["probe"]["state"] == "rejected"
+
+
+def test_review_with_nothing_waiting(root: Path, resume: Path) -> None:
+    approve_resume(root, resume)
+    assert "Nothing to review." in ok(root, "review").output
+    assert "[1/1] resume-2026 (approved)" in ok(root, "review", "--all", input="n\nq\n").output
 
 
 # --- status and staleness -----------------------------------------------------
@@ -328,7 +453,7 @@ def test_snapshot_again_clears_the_approval(root: Path, resume: Path) -> None:
     assert entry["state"] == "in_review"
     assert {"content_sha256", "approved_at", "approved_by"}.isdisjoint(entry)
 
-    ok(root, "review", "resume-2026", "--approve", "--by", "tester")
+    ok(root, "review", "resume-2026", "--approve", "--checklist-confirmed", "--by", "tester")
     assert ok(root, "status").exit_code == 0
     assert (root / "reviews" / "resume-2026.md").read_text().count(" approve\n") == 2
 

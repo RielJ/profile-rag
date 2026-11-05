@@ -1,6 +1,7 @@
 """Tests for cli.py: `profile-rag search`.
 
-No Ollama: the tests replace `cli._ollama_digests` and `cli._embeddings`, as
+No Ollama: the tests replace `ollama_embeddings.ollama_digests` and
+`ollama_embeddings.for_model`, as
 test_cli_index.py does. The chunk table is built by the `fill_search_table`
 fixture in conftest.py.
 
@@ -18,6 +19,7 @@ from typer.testing import CliRunner, Result
 
 from profile_rag import cli
 from profile_rag.settings import get_settings
+from profile_rag.vectorstore import ollama_embeddings
 from profile_rag.vectorstore.models import NOMIC_V15, EmbeddingModel
 
 FillSearchTable = Callable[[str, EmbeddingModel, Embeddings, list[Document]], None]
@@ -77,7 +79,7 @@ def digests(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     def listed(base_url: str) -> dict[str, str]:
         return pulled
 
-    monkeypatch.setattr(cli, "_ollama_digests", listed)
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", listed)
     return pulled
 
 
@@ -86,7 +88,7 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     def make(model: EmbeddingModel, base_url: str) -> Embeddings:
         return DeterministicFakeEmbedding(size=model.dimensions)
 
-    monkeypatch.setattr(cli, "_embeddings", make)
+    monkeypatch.setattr(ollama_embeddings, "for_model", make)
 
 
 def run(*args: str) -> Result:

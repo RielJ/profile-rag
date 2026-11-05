@@ -17,14 +17,15 @@ but it can miss some of the true nearest chunks.
 
 Postgres decides per query whether to use the index. For a small table a
 sequential scan is cheaper, so the index is not used at all. `open_engine`
-with `plan="index"` turns sequential scans off for its connections, so the
+(a context manager) with `plan="index"` turns sequential scans off for its connections, so the
 planner takes the index whenever it can; `plan="exact"` turns index scans
 off, so every dense query is exact. evaluation/ann_compare.py uses both.
 
 Tests: backend/tests/test_hnsw.py.
 """
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -33,6 +34,7 @@ from langchain_postgres import PGEngine, PGVectorStore
 from langchain_postgres.v2.indexes import HNSWIndex
 from psycopg import sql
 
+from profile_rag.vectorstore import store as chunk_store
 from profile_rag.vectorstore.models import EmbeddingModel
 from profile_rag.vectorstore.store import TABLE_NAMES
 
@@ -138,16 +140,18 @@ def drop_hnsw(store: PGVectorStore, model: EmbeddingModel) -> None:
     store.drop_vector_index(hnsw_index_name(model))
 
 
-def open_engine(url: str, *, plan: Plan = "default") -> PGEngine:
+@contextmanager
+def open_engine(url: str, *, plan: Plan = "default") -> Generator[PGEngine]:
     """A `PGEngine` whose connections plan dense queries as `plan` says.
 
     The setting is a connection option (`-c ...`), so it holds for every
-    query on the engine's connections and for no other connection.
+    query on the engine's connections and for no other connection. The
+    engine is closed when the `with` block ends (`store.connected`).
     """
     options = _PLAN_OPTIONS[plan]
-    if options is None:
-        return PGEngine.from_connection_string(url=url)
-    return PGEngine.from_connection_string(url=url, connect_args={"options": options})
+    connect_args = None if options is None else {"options": options}
+    with chunk_store.connected(url, connect_args=connect_args) as engine:
+        yield engine
 
 
 # One fixed query per chunk table, built from the allowlist `TABLE_NAMES`.

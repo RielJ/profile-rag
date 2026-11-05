@@ -8,7 +8,15 @@ The store used for indexing has a `HybridSearchConfig` for `TSV_COLUMN`, so
 its inserts fill that column. The store used for search has none: a search
 writes the query into the config it is given, so each hybrid search builds
 its own (retrievers/hybrid.py).
+
+`connected(url)` and `searching(url, ...)` own the engine's lifecycle: the
+engine's connection pool is closed when the `with` block ends, also when it
+ends with an exception. Commands use them instead of closing it themselves.
 """
+
+import asyncio
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
 
 import psycopg
 from langchain_core.embeddings import Embeddings
@@ -154,3 +162,33 @@ def open_search_store(
         metadata_columns=list(METADATA_COLUMNS),
         index_query_options=None if ef_search is None else HNSWQueryOptions(ef_search=ef_search),
     )
+
+
+@contextmanager
+def connected(url: str, *, connect_args: Mapping[str, str] | None = None) -> Generator[PGEngine]:
+    """A `PGEngine` for the database at `url`, closed when the block ends.
+
+    `connect_args` go to every connection the engine opens (vectorstore/hnsw.py
+    passes planner options this way).
+    """
+    if connect_args is None:
+        engine = PGEngine.from_connection_string(url=url)
+    else:
+        engine = PGEngine.from_connection_string(url=url, connect_args=dict(connect_args))
+    try:
+        yield engine
+    finally:
+        asyncio.run(engine.close())
+
+
+@contextmanager
+def searching(
+    url: str,
+    model: EmbeddingModel,
+    embeddings: Embeddings,
+    *,
+    ef_search: int | None = None,
+) -> Generator[PGVectorStore]:
+    """`open_search_store` on its own engine, which is closed when the block ends."""
+    with connected(url) as engine:
+        yield open_search_store(engine, model, embeddings, ef_search=ef_search)

@@ -3,7 +3,8 @@
 Each test gets a throwaway database whose `chunks_nomic_v15` holds the
 corpus-example/ chunks, as `index` splits them, with vectors from
 `DeterministicFakeEmbedding`. No Ollama: the CLI tests replace
-`cli._ollama_digests` and `cli._embeddings`, as test_eval_cli.py does.
+`ollama_embeddings.ollama_digests` and
+`ollama_embeddings.for_model`, as test_eval_cli.py does.
 
 How the tests know `ef_search` reaches the database session: pgvector's
 HNSW index scan returns at most `hnsw.ef_search` rows (iterative scans are
@@ -31,7 +32,7 @@ from profile_rag.evaluation.ann_compare import overlap_at_k, scan_line
 from profile_rag.evaluation.runner import RunConfig
 from profile_rag.retrievers.dense import VISIBLE, VISIBLE_VALUES, dense_retriever
 from profile_rag.settings import get_settings
-from profile_rag.vectorstore import hnsw
+from profile_rag.vectorstore import hnsw, ollama_embeddings
 from profile_rag.vectorstore.models import NOMIC_V15, EmbeddingModel
 from profile_rag.vectorstore.store import open_search_store
 
@@ -89,8 +90,8 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     def make(model: EmbeddingModel, base_url: str) -> Embeddings:
         return DeterministicFakeEmbedding(size=model.dimensions)
 
-    monkeypatch.setattr(cli, "_ollama_digests", listed)
-    monkeypatch.setattr(cli, "_embeddings", make)
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", listed)
+    monkeypatch.setattr(ollama_embeddings, "for_model", make)
 
 
 def indexes(url: str) -> dict[str, str]:
@@ -105,12 +106,9 @@ def indexes(url: str) -> dict[str, str]:
 
 def dense_count(url: str, *, plan: hnsw.Plan, ef_search: int | None, k: int = 5) -> int:
     """How many chunks a dense search for `k` returns on an engine with `plan`."""
-    engine = hnsw.open_engine(url, plan=plan)
-    try:
+    with hnsw.open_engine(url, plan=plan) as engine:
         store = open_search_store(engine, NOMIC_V15, EMBEDDINGS, ef_search=ef_search)
         return len(dense_retriever(store, k=k, filter=VISIBLE).invoke("Go job queue"))
-    finally:
-        asyncio.run(engine.close())
 
 
 def cli_run(*args: str) -> Result:

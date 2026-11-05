@@ -5,15 +5,17 @@ write it back:
 
     profile-rag corpus add ID --kind K --title T --attribution A --visibility V
     profile-rag corpus snapshot ID [--from PATH_OR_URL] [--private] [--revision R]
-    profile-rag corpus review ID [--approve | --reject REASON] [--by NAME]
+    profile-rag corpus review [ID] [--all] [--approve --checklist-confirmed | --reject REASON]
+                          [--by NAME]
     profile-rag corpus status
 
 The lifecycle of one source:
 
     add       creates the entry as `candidate`
     snapshot  copies the content into approved/ and moves it to `in_review`
-    review    shows scan findings and the checklist, then records the
-              decision: `approved` (with the file's SHA-256) or `rejected`
+    review    walks the sources waiting for review (corpus/review_session.py):
+              view, edit, checklist, then `approved` (with the file's
+              SHA-256) or `rejected`
     status    lists every entry and reports approved files that changed
               since approval (stale). Exit code 1 if anything is stale
 
@@ -57,7 +59,7 @@ It retrieves k chunks as `search` does, then runs the grounded answer chain
 (generation/chain.py) through Pi (generation/pi_rpc.py, settings PROFILE_RAG_PI_BIN,
 PROFILE_RAG_PI_MODEL, PROFILE_RAG_PI_TIMEOUT_SECONDS). It prints the answer and each cited chunk
 with its source title and attribution, or `Unknown.` and the reason. Exit
-codes: 0 answered or unknown, 2 setup error, 3 Pi failed, 4 the model's
+codes: 0 answered or unknown, 2 setup error or failed search, 3 Pi failed, 4 the model's
 reply was rejected (not a valid answer, or a citation of a chunk it was not
 given). Error messages never contain the model's reply.
 
@@ -77,33 +79,30 @@ relative to backend/. To use paths relative to the repository root, run
 from there with `uv run --project backend profile-rag ...`.
 """
 
-import asyncio
 import getpass
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, NoReturn, get_args
 
-import ollama
+import click
 import psycopg
 import typer
 from langchain_core.documents import Document
-from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
 from langchain_core.retrievers import BaseRetriever
-from langchain_ollama import OllamaEmbeddings
-from langchain_postgres import PGEngine, PGVectorStore
+from langchain_postgres import PGVectorStore
 from pydantic import ValidationError
 
-from profile_rag import tracing
+from profile_rag import rag, tracing
 from profile_rag.agent.errors import AgentLoopError, GradeParseError, RewriteError
 from profile_rag.agent.graph import build_graph, run_agent
-from profile_rag.corpus import documents, registry, scan, sources_table, splitting
+from profile_rag.api.models import FailedCode
+from profile_rag.corpus import documents, registry, review_session, sources_table, splitting
 from profile_rag.corpus.registry import (
     REGISTRY_FILENAME,
-    REVIEWS_DIR,
     Attribution,
     Kind,
     Registry,
@@ -122,25 +121,17 @@ from profile_rag.evaluation import agent_compare, ann_compare
 from profile_rag.evaluation.labels import ResolvedQuestion, resolve_labels
 from profile_rag.evaluation.questions import QuestionFileError, load_questions
 from profile_rag.evaluation.runner import RunConfig, run_evaluation
+from profile_rag.generation import pi_chat_model
 from profile_rag.generation.answer import InventedCitation, Unknown
 from profile_rag.generation.chain import GroundedAnswer, build_chain
-from profile_rag.generation.pi_chat_model import PiChatModel
-from profile_rag.generation.pi_rpc import PiConfig, PiError, PiProcessError, PiTimeout
+from profile_rag.generation.pi_rpc import PiError, PiProcessError, PiTimeout
 from profile_rag.retrievers.factory import SearchMode, build_retriever, dense_candidates
 from profile_rag.settings import REPO_ROOT, Settings, TracingSettings, get_settings
-from profile_rag.vectorstore import hnsw, indexing, store
+from profile_rag.vectorstore import hnsw, indexing, ollama_embeddings, store
 from profile_rag.vectorstore.models import DEFAULT_MODEL, MODELS, EmbeddingModel
-from profile_rag.vectorstore.prefixed import EmbeddingError, PrefixedEmbeddings
+from profile_rag.vectorstore.prefixed import EmbeddingError
 
 DEFAULT_CORPUS = REPO_ROOT / "corpus"
-
-CHECKLIST = (
-    "Is the content public, or sanitized into a version any visitor could see?",
-    "Does it contain secrets, credentials, internal hostnames, or other people's personal data?",
-    "Is the attribution category correct?",
-    "Is the revision recorded (commit SHA, date, or hash)?",
-    "Would you be comfortable with an answer quoting any sentence of it verbatim?",
-)
 
 app = typer.Typer(help="Question answering over reviewed professional evidence.")
 corpus_app = typer.Typer(help="Manage the corpus registry (sources.yaml) and reviews.")
@@ -236,25 +227,6 @@ def _updated(entry: SourceEntry, **changes: object) -> SourceEntry:
 
 def _replace(current: Registry, entry: SourceEntry) -> list[SourceEntry]:
     return [entry if existing.id == entry.id else existing for existing in current.sources]
-
-
-def _ask_decision() -> str:
-    # A loop, not `type=click.Choice(...)`: Typer bundles its own copy of
-    # Click, and its prompt does not re-ask on the separate package's errors.
-    choices = ("approve", "reject", "skip")
-    while True:
-        answer = typer.prompt(f"Decision ({', '.join(choices)})").strip().lower()
-        if answer in choices:
-            return answer
-        typer.echo(f"Type one of: {', '.join(choices)}.")
-
-
-def _ask_reason() -> str:
-    while True:
-        reason = typer.prompt("Reason").strip()
-        if reason:
-            return reason
-        typer.echo("A rejection needs a reason.")
 
 
 # --- Commands ---------------------------------------------------------------
@@ -366,69 +338,97 @@ def snapshot(
 @corpus_app.command()
 def review(
     context: typer.Context,
-    source_id: Annotated[str, typer.Argument(metavar="ID")],
-    approve: Annotated[bool, typer.Option("--approve", help="Approve without asking.")] = False,
-    reject: Annotated[
-        str | None, typer.Option(metavar="REASON", help="Reject without asking.")
+    source_id: Annotated[
+        str | None,
+        typer.Argument(metavar="[ID]", help="One source. Leave out to review the whole queue."),
     ] = None,
+    approve: Annotated[
+        bool,
+        typer.Option("--approve", help="Approve ID without asking. Needs --checklist-confirmed."),
+    ] = False,
+    checklist_confirmed: Annotated[
+        bool,
+        typer.Option(
+            "--checklist-confirmed", help="With --approve: you checked every checklist item."
+        ),
+    ] = False,
+    reject: Annotated[
+        str | None, typer.Option(metavar="REASON", help="Reject ID without asking.")
+    ] = None,
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Also re-review approved sources that are not stale.")
+    ] = False,
     by: Annotated[str | None, typer.Option(help="Reviewer name. Defaults to your login.")] = None,
 ) -> None:
-    """Show a source's scan findings and the checklist, then approve or reject it."""
+    """Review sources one by one: view, edit, checklist, then approve or reject.
+
+    Without ID, the queue is every in_review source, then every stale
+    approval, in sources.yaml order (corpus/review_session.py).
+    """
     if approve and reject is not None:
         _fail("use --approve or --reject, not both")
     if reject is not None and not reject.strip():
         _fail("--reject needs a reason")
+    if approve and not checklist_confirmed:
+        _fail("--approve also needs --checklist-confirmed: you state that you checked every item")
+    if checklist_confirmed and not approve:
+        _fail("--checklist-confirmed only goes with --approve")
+    if source_id is None and (approve or reject is not None):
+        _fail("--approve and --reject need an ID")
+    if source_id is not None and include_all:
+        _fail("--all reviews the whole queue; leave out the ID")
     root = _root(context)
     current = _load(root)
-    entry = _entry(current, source_id)
+    io = review_session.ReviewIO(prompt=_prompt, echo=typer.echo, show=typer.echo, edit=_edit)
+    reviewer = by or getpass.getuser()
+    try:
+        if source_id is None:
+            queue = review_session.build_queue(current.sources, root, include_all=include_all)
+            for missing in queue.missing:
+                typer.echo(f"{missing}: the snapshot file is missing; snapshot it again first.")
+            if not queue.sources:
+                typer.echo("Nothing to review. --all also lists approved sources.")
+                return
+            entries = queue.sources
+        else:
+            entry = _reviewable(root, _entry(current, source_id))
+            if approve or reject is not None:
+                review_session.decide_by_flag(
+                    root=root, entry=entry, io=io, reviewer=reviewer, when=_now(), reject=reject
+                )
+                return
+            entries = [entry]
+        session = review_session.Session(root=root, io=io, reviewer=reviewer, clock=_now)
+        review_session.print_summary(io, root, session.run(entries))
+    except review_session.ReviewError as error:
+        _fail(str(error))
+
+
+def _reviewable(root: Path, entry: SourceEntry) -> SourceEntry:
     if entry.state not in ("in_review", "approved"):
         hint = "snapshot" if entry.state == "candidate" else "snapshot it again before reviewing"
-        _fail(f"{source_id} is {entry.state}; {hint}: profile-rag corpus snapshot {source_id}")
-    if entry.path is None:
-        _fail(f"{source_id} has no snapshot path; run profile-rag corpus snapshot {source_id}")
-    file = root / entry.path
-    if not file.is_file():
-        _fail(f"{file} does not exist; run profile-rag corpus snapshot {source_id}")
+        _fail(f"{entry.id} is {entry.state}; {hint}: profile-rag corpus snapshot {entry.id}")
+    if entry.path is None or not (root / entry.path).is_file():
+        _fail(f"{entry.id} has no snapshot file; run profile-rag corpus snapshot {entry.id}")
+    return entry
 
-    digest = registry.file_sha256(file)
-    findings = scan.scan_file(file)
-    _print_review(entry, file, digest, findings)
 
-    decision: str
-    reason = reject
-    if approve:
-        decision = "approve"
-    elif reject is not None:
-        decision = "reject"
-    else:
-        decision = _ask_decision()
-        if decision == "reject":
-            reason = _ask_reason()
-    if decision == "skip":
-        typer.echo("No change.")
-        return
+def _now() -> datetime:
+    return datetime.now(UTC).replace(microsecond=0)
 
-    reviewer = by or getpass.getuser()
-    now = datetime.now(UTC).replace(microsecond=0)
-    if decision == "approve":
-        changes: dict[str, object] = {
-            "state": "approved",
-            "content_sha256": digest,
-            "approved_at": now,
-            "approved_by": reviewer,
-            "rejection_reason": None,
-        }
-    else:
-        changes = {
-            "state": "rejected",
-            "rejection_reason": reason,
-            "approved_at": None,
-            "approved_by": None,
-        }
-    updated = _updated(entry, **changes)
-    _save(root, _replace(current, updated))
-    _record_review(root, updated, decision, reviewer, now, digest, findings)
-    typer.echo(f"{source_id} is {updated.state}.")
+
+def _prompt(text: str) -> str:
+    try:
+        return typer.prompt(text, default="", show_default=False)
+    except typer.Abort:  # Click's prompt turns Ctrl-C and end of input into Abort
+        raise EOFError from None
+
+
+def _edit(path: Path) -> None:
+    try:
+        click.edit(filename=str(path))
+    except click.ClickException as error:
+        raise review_session.EditorFailed(error.format_message()) from error
 
 
 @corpus_app.command()
@@ -472,70 +472,6 @@ def status(context: typer.Context) -> None:
         for source_id in stale:
             typer.echo(f"  {source_id}")
         raise typer.Exit(1)
-
-
-def _print_review(
-    entry: SourceEntry, file: Path, digest: str, findings: list[scan.Finding]
-) -> None:
-    fields = {
-        "id": entry.id,
-        "title": entry.title,
-        "kind": entry.kind,
-        "attribution": entry.attribution,
-        "visibility": entry.visibility,
-        "state": entry.state,
-        "url": entry.url or "(none)",
-        "revision": entry.revision or "(none)",
-        "file": str(file),
-        "sha256": digest,
-    }
-    for name, value in fields.items():
-        typer.echo(f"{name:>12}: {value}")
-    if entry.state == "approved" and entry.content_sha256 != digest:
-        typer.echo("\nThe file changed since it was approved.")
-
-    typer.echo("\nScan findings (possible secrets or personal data; the scan never approves):")
-    if findings:
-        for finding in findings:
-            typer.echo(f"  {finding.display()}")
-    else:
-        typer.echo("  none found. That does not mean the file is safe; read it in full.")
-
-    typer.echo("\nChecklist:")
-    for question in CHECKLIST:
-        typer.echo(f"  [ ] {question}")
-    typer.echo("")
-
-
-def _record_review(
-    root: Path,
-    entry: SourceEntry,
-    decision: str,
-    reviewer: str,
-    when: datetime,
-    digest: str,
-    findings: list[scan.Finding],
-) -> None:
-    """Append the decision to reviews/<id>.md, an audit trail kept with the corpus."""
-    lines = [
-        f"## {when.isoformat()} {decision}",
-        "",
-        f"- reviewer: {reviewer}",
-        f"- revision: {entry.revision}",
-        f"- path: {entry.path}",
-        f"- sha256: {digest}",
-        f"- attribution: {entry.attribution}",
-        f"- visibility: {entry.visibility}",
-    ]
-    if entry.rejection_reason:
-        lines.append(f"- reason: {entry.rejection_reason}")
-    # Only rule names and positions: the matched text may be a secret.
-    flagged = ", ".join(f"{f.rule} {f.line}:{f.column}" for f in findings) or "none"
-    lines.extend((f"- scan findings: {flagged}", "", ""))
-    reviews = root / REVIEWS_DIR
-    reviews.mkdir(parents=True, exist_ok=True)
-    with (reviews / f"{entry.id}.md").open("a", encoding="utf-8") as record:
-        record.write("\n".join(lines))
 
 
 # --- chunks -------------------------------------------------------------------
@@ -599,40 +535,13 @@ def chunks_show(
 
 # --- index --------------------------------------------------------------------
 #
-# The Ollama parts go through `_ollama_digests` and `_embeddings`, so tests
-# can replace both with fakes.
-
-
-def _ollama_digests(base_url: str) -> dict[str, str]:
-    """Tag to digest (64 hex characters) of every model Ollama has pulled."""
-    listed = ollama.Client(host=base_url).list()
-    return {
-        entry.model: (entry.digest or "").removeprefix("sha256:")
-        for entry in listed.models
-        if entry.model
-    }
+# The Ollama parts go through vectorstore/ollama_embeddings.py; tests replace
+# its `ollama_digests` and `for_model` with fakes.
 
 
 def _check_model(model: EmbeddingModel, base_url: str) -> None:
-    try:
-        digests = _ollama_digests(base_url)
-    except ConnectionError:
-        _fail(f"cannot reach Ollama at {base_url}. Start it, or set OLLAMA_URL in .env.")
-    installed = digests.get(model.ollama_tag)
-    if installed is None:
-        _fail(f"Ollama has no {model.ollama_tag}. Run `ollama pull {model.ollama_tag}`.")
-    if installed != model.digest:
-        _fail(
-            f"Ollama's {model.ollama_tag} has digest {installed[:12]}, but"
-            f" vectorstore/models.py expects {model.digest[:12]}. The tag now points at"
-            " other weights, so its vectors would not match the ones in the table."
-            " If you pulled the new version on purpose, copy the full digest from"
-            " `curl -s $OLLAMA_URL/api/tags` into models.py and re-index into an empty table."
-        )
-
-
-def _embeddings(model: EmbeddingModel, base_url: str) -> PrefixedEmbeddings:
-    return PrefixedEmbeddings(OllamaEmbeddings(model=model.ollama_tag, base_url=base_url), model)
+    if problem := ollama_embeddings.model_problem(model, base_url):
+        _fail(problem)
 
 
 def _name_chunk(chunks: list[Document], error: EmbeddingError) -> str:
@@ -681,9 +590,8 @@ def index_command(
     for source_id in synced.deleted:
         typer.echo(f"  removed {source_id}")
 
-    embeddings = _embeddings(model, settings.ollama_url)
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
+    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    with store.connected(database_url) as engine:
         if not store.table_exists(database_url, model.table_name):
             store.create_table(engine, model, embeddings)
             typer.echo(f"created table {model.table_name}")
@@ -693,8 +601,6 @@ def index_command(
             result = indexing.index_corpus(chunks, index_store, record_manager)
         except EmbeddingError as error:
             _fail(_name_chunk(chunks, error))
-    finally:
-        asyncio.run(engine.close())
     typer.echo(
         f"{model.table_name}: {len(chunks)} chunks, {result['num_added']} added,"
         f" {result['num_updated']} updated, {result['num_skipped']} skipped,"
@@ -760,18 +666,14 @@ def search_command(
     _require_traceable(database_url, model)
 
     _warn_low_ef_search(ef_search, mode, k)
-    embeddings = _embeddings(model, settings.ollama_url)
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
-        search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
+    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    with store.searching(database_url, model, embeddings, ef_search=ef_search) as search_store:
         try:
             retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
             chunks = retriever.invoke(question)
             distances = _distances(search_store, question, chunks) if chunks else []
         except EmbeddingError as error:
             _fail(f"the question: {error.reason}")
-    finally:
-        asyncio.run(engine.close())
 
     typer.echo(f"{model.table_name}, {mode}: {len(chunks)} chunks")
     if chunks:
@@ -784,14 +686,26 @@ def search_command(
 
 # --- ask ----------------------------------------------------------------------
 #
-# Exit codes of `ask` and `agent`: 0 answered or unknown, 2 setup error (the
-# `_fail` code), 3 Pi failed, 4 the model's reply was rejected, 5 the agent
-# graph exceeded its recursion limit (a bug). A message never contains the
+# Exit codes of `ask` and `agent`: 0 answered or unknown, 2 setup error or a
+# failed evidence search (the `_fail` code), 3 Pi failed, 4 the model's reply
+# was rejected, 5 the agent graph exceeded its recursion limit (a bug). A message never contains the
 # model's reply: an OutputParserException's text does, so it is not printed.
 
 EXIT_PI_FAILED = 3
 EXIT_REPLY_REJECTED = 4
 EXIT_AGENT_LOOP = 5
+
+# Exit code of each failure of the chain. `rag.failure_code` decides which
+# failure an error is, for the CLI and the API alike; this table and the
+# API's FAILED_STATUS (api/routes.py) only translate it. `internal_error`
+# has no exit code: the error is a bug, so it is raised with its traceback.
+ANSWER_EXIT: dict[FailedCode, int] = {
+    "retrieval_failed": 2,
+    "pi_timeout": EXIT_PI_FAILED,
+    "pi_failed": EXIT_PI_FAILED,
+    "bad_reply": EXIT_REPLY_REJECTED,
+    "invented_citation": EXIT_REPLY_REJECTED,
+}
 
 QuestionArgument = Annotated[str, typer.Argument(help="The question, in quotes.")]
 AnswerModelOption = Annotated[
@@ -803,12 +717,7 @@ AnswerKOption = Annotated[int, typer.Option("-k", min=1, help="How many chunks t
 
 def _pi_model(settings: Settings) -> BaseChatModel:
     """The Pi chat model from the settings. Tests replace this function."""
-    config = PiConfig(
-        model=settings.pi_model,
-        executable=(settings.pi_bin,),
-        timeout=settings.pi_timeout_seconds,
-    )
-    return PiChatModel(config=config)
+    return pi_chat_model.from_settings(settings)
 
 
 def _ask_failure(message: str, code: int) -> NoReturn:
@@ -885,7 +794,7 @@ def _print_node(node: str, update: dict[str, object]) -> None:
 @contextmanager
 def _answer_setup(
     question: str, model_key: str, mode: SearchMode, k: int, ef_search: int | None
-) -> Iterator[tuple[BaseRetriever, Settings]]:
+) -> Generator[tuple[BaseRetriever, Settings]]:
     """Check the inputs, open the store, and yield the retriever and settings."""
     if not question.strip():
         _fail("the question is empty.")
@@ -897,38 +806,49 @@ def _answer_setup(
     _require_traceable(database_url, model)
 
     _warn_low_ef_search(ef_search, mode, k)
-    embeddings = _embeddings(model, settings.ollama_url)
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
-        search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
+    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    with store.searching(database_url, model, embeddings, ef_search=ef_search) as search_store:
         yield build_retriever(mode, search_store, k, conninfo=database_url, model=model), settings
-    finally:
-        asyncio.run(engine.close())
 
 
 @contextmanager
-def _answer_errors() -> Iterator[None]:
+def _answer_errors() -> Generator[None]:
     """Turn the errors of an answer run into exit codes. See the exit codes above."""
     try:
         yield
-    except EmbeddingError as error:
-        _fail(f"the question: {error.reason}")
-    except PiError as error:
-        _ask_failure(_describe_pi_error(error), EXIT_PI_FAILED)
-    except OutputParserException:
-        _ask_failure(
-            "the model's reply is not a valid answer (not JSON of the required shape).",
-            EXIT_REPLY_REJECTED,
-        )
-    except InventedCitation as error:
-        _ask_failure(
-            f"the model cited chunks it was not given: {', '.join(error.invented)}.",
-            EXIT_REPLY_REJECTED,
-        )
+    # The agent graph's own errors. The API runs the chain only, so these are
+    # not in `rag.failure_code`.
     except (GradeParseError, RewriteError) as error:
         _ask_failure(str(error), EXIT_REPLY_REJECTED)
     except AgentLoopError as error:
         _ask_failure(str(error), EXIT_AGENT_LOOP)
+    except Exception as error:
+        code = rag.failure_code(error)
+        if code == "internal_error":
+            raise
+        _ask_failure(_describe_failure(code, error), ANSWER_EXIT[code])
+
+
+def _describe_failure(code: FailedCode, error: Exception) -> str:
+    """The CLI message of a chain failure. Never the model's reply."""
+    match code:
+        case "pi_timeout" | "pi_failed" if isinstance(error, PiError):
+            return _describe_pi_error(error)
+        case "bad_reply":
+            # An OutputParserException's text contains the reply.
+            return "the model's reply is not a valid answer (not JSON of the required shape)."
+        case "invented_citation" if isinstance(error, InventedCitation):
+            return f"the model cited chunks it was not given: {', '.join(error.invented)}."
+        case "retrieval_failed" if isinstance(error, EmbeddingError):
+            return f"the question: {error.reason}"
+        case "retrieval_failed":
+            first_line = (str(error).splitlines() or [""])[0][:200]
+            return (
+                f"the evidence search failed ({type(error).__name__}: {first_line})."
+                " Check that Postgres and Ollama are running."
+            )
+        case _:
+            return str(error)
 
 
 def _print_answer(result: GroundedAnswer) -> None:
@@ -1027,10 +947,8 @@ def eval_command(
 
     config = RunConfig(eval_set, model.key, mode, k, chunk_count, ef_search)
     _warn_low_ef_search(ef_search, mode, k)
-    embeddings = _embeddings(model, ollama_url)
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
-        search_store = store.open_search_store(engine, model, embeddings, ef_search=ef_search)
+    embeddings = ollama_embeddings.for_model(model, ollama_url)
+    with store.searching(database_url, model, embeddings, ef_search=ef_search) as search_store:
         retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
         try:
             output = run_evaluation(
@@ -1042,8 +960,6 @@ def eval_command(
             )
         except EmbeddingError as error:
             _fail(f"a question: {error.reason}")
-    finally:
-        asyncio.run(engine.close())
 
     summary = output.summary
     recall = "n/a" if summary.recall is None else f"{summary.recall:.3f}"
@@ -1099,10 +1015,8 @@ def compare_agent_command(
             f" ({result.agent.pi_calls}, rewrites {result.agent.rewrites})"
         )
 
-    embeddings = _embeddings(model, ollama_url)
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
-        search_store = store.open_search_store(engine, model, embeddings)
+    embeddings = ollama_embeddings.for_model(model, ollama_url)
+    with store.searching(database_url, model, embeddings) as search_store:
         retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
         pi = _pi_model(settings)
         with _answer_errors():
@@ -1113,8 +1027,6 @@ def compare_agent_command(
                 max_pi_calls=max_pi_calls,
                 on_question=progress,
             )
-    finally:
-        asyncio.run(engine.close())
 
     detail, report = agent_compare.write_outputs(
         config, output, results_dir=EVAL_RESULTS_DIR, docs_dir=EVAL_DOCS_DIR
@@ -1204,16 +1116,11 @@ def hnsw_apply_command(
     _require_table(database_url, model)
     if ef_construction < 2 * m:
         _fail(f"--ef-construction must be at least 2 * --m ({2 * m}).")
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
-        search_store = store.open_search_store(
-            engine, model, _embeddings(model, settings.ollama_url)
-        )
+    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    with store.searching(database_url, model, embeddings) as search_store:
         result = hnsw.apply_hnsw(
             search_store, model, conninfo=database_url, m=m, ef_construction=ef_construction
         )
-    finally:
-        asyncio.run(engine.close())
     typer.echo(f"{result}: {_describe_index(hnsw.hnsw_status(database_url, model), model)}")
 
 
@@ -1225,14 +1132,9 @@ def hnsw_drop_command(model_key: ModelOption = DEFAULT_MODEL) -> None:
     database_url = str(settings.database_url)
     _require_table(database_url, model)
     existed = hnsw.hnsw_status(database_url, model) is not None
-    engine = PGEngine.from_connection_string(url=database_url)
-    try:
-        search_store = store.open_search_store(
-            engine, model, _embeddings(model, settings.ollama_url)
-        )
+    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    with store.searching(database_url, model, embeddings) as search_store:
         hnsw.drop_hnsw(search_store, model)
-    finally:
-        asyncio.run(engine.close())
     action = "dropped" if existed else "absent"
     typer.echo(f"{action}: {hnsw.hnsw_index_name(model)}")
 
@@ -1285,7 +1187,7 @@ def hnsw_compare_command(
         comparison = ann_compare.run_ann_compare(
             database_url,
             model,
-            _embeddings(model, ollama_url),
+            ollama_embeddings.for_model(model, ollama_url),
             questions,
             set_name=eval_set,
             chunks=len(store.chunk_ids(database_url, model)),

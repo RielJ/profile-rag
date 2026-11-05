@@ -62,14 +62,16 @@ All paths are under `backend/src/profile_rag/`.
 | `corpus/registry.py` | Reads, validates, and writes `sources.yaml`. Enforces the review states and detects stale approvals by SHA-256. |
 | `corpus/snapshot.py` | Copies a local file or URL into `approved/` (or `private/`) and records its revision. |
 | `corpus/scan.py` | Flags secrets, email addresses, phone numbers, and internal hosts for the reviewer. |
+| `corpus/review_session.py` | The `corpus review` session: the queue (in review, then stale approvals), a guided start per source (contents, then checklist, then an offer to approve; again after an edit that changes the file), then the menu: view, edit, checklist, approve and reject, and the audit record in `reviews/`. Terminal I/O is passed in as functions, so tests run it without a terminal. |
 | `corpus/documents.py` | Loads each approved snapshot as a `Document`, after it checks the file hash. |
 | `corpus/splitting.py` | Splits documents at headings, then by size in words. Starts each chunk's text with its heading path. Gives each chunk a stable `chunk_id`. |
 | `corpus/sources_table.py` | Keeps the `sources` table equal to the approved registry entries. |
 | `vectorstore/models.py` | The embedding models: Ollama tag, digest, dimensions, table name, and prefixes. |
+| `vectorstore/ollama_embeddings.py` | The Ollama side of a model: `model_problem` says whether Ollama has the tag with the expected digest and how to fix it, and `for_model` builds its prefixed embeddings. The CLI, the API and `make demo` all use it. |
 | `vectorstore/prefixed.py` | `PrefixedEmbeddings`: adds the model's document or query prefix and checks every vector. |
-| `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. |
+| `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. `connected(url)` and `searching(url, model, embeddings)` are context managers that close the engine when the block ends, also on an error; the CLI commands use them. |
 | `vectorstore/indexing.py` | Runs LangChain `index()` with a record manager per model. |
-| `vectorstore/hnsw.py` | Applies, drops, and reports the HNSW index on a model's table. `open_engine(url, plan=)` forces or forbids index scans, and `explain_dense` shows the plan of the dense query. |
+| `vectorstore/hnsw.py` | Applies, drops, and reports the HNSW index on a model's table. `open_engine(url, plan=)` is a context manager (built on `store.connected`) whose engine forces or forbids index scans, and `explain_dense` shows the plan of the dense query. |
 | `retrievers/dense.py` | `dense_retriever`, `mmr_retriever`, and the `VISIBLE` filter. |
 | `retrievers/keyword.py` | `keyword_search`: the chunks that contain any word of the question, ranked by `ts_rank_cd`, with plain SQL on the model's table. |
 | `retrievers/hybrid.py` | `HybridRetriever`: the store's dense search and `keyword_search`, fused with reciprocal rank fusion. |
@@ -154,6 +156,8 @@ candidate ──► in_review ──► approved
 ```
 
 Only `approved` sources are indexed. Approval records the snapshot's SHA-256. If the file changes, the approval is stale: `profile-rag corpus status` exits with code 1, and `profile-rag index` stops with an error that names the source. Review the source again to fix it.
+
+Approval in `profile-rag corpus review` (`corpus/review_session.py`) needs a yes to every checklist item for the file's current hash. The file is hashed again just before the decision is saved, and an approval is refused if the content changed after the checklist. `reviews/<id>.md` records the hash, the checklist answers, whether the file was edited during the review, and the rule and position of each scan finding, never the matched text. `--approve` without the session needs `--checklist-confirmed`, and the record says so.
 
 Each source has an attribution, so an answer does not turn a project's features into a claim about what Riel did:
 
@@ -316,7 +320,7 @@ The adapter reads records until `agent_settled`, so it waits through Pi's automa
 | `PiProtocolError` | A line that is not a JSON object, a rejected prompt, a request for user input, a disallowed system-prompt section, or no assistant message. |
 | `PiModelError` | The model call ended with a stop reason other than `stop` (provider error, length limit), or the run was aborted. |
 
-No error message contains the prompt or the reply. `ask` and `agent` map `PiError` to exit code 3, and `OutputParserException` and `InventedCitation` to exit code 4.
+No error message contains the prompt or the reply. `ask` and `agent` classify a chain error with `rag.failure_code`, the function the API uses, and look up the exit code in `cli.ANSWER_EXIT`: 2 for `retrieval_failed`, 3 for `pi_timeout` and `pi_failed` (every `PiError`), and 4 for `bad_reply` (`OutputParserException`) and `invented_citation`. An `internal_error` is a bug and is raised with its traceback.
 
 Tested with Pi 1.5.0. `tests/test_pi_live.py` (run with `--live`) checks the version, checks that `pi --help` lists every flag above, and sends one prompt. That prompt test checks the system-prompt sections and that no session file appears. The other tests use `tests/fake_pi.py`, a script that replays scripted RPC records, and need no Pi.
 

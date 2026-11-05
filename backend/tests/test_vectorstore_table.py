@@ -11,6 +11,7 @@ breaking without an error.
 
 import asyncio
 from collections.abc import Iterator
+from typing import ClassVar
 
 import psycopg
 import pytest
@@ -32,6 +33,9 @@ SMALL = EmbeddingModel(
     query_prefix="",
     max_words=1000,
 )
+
+URL = "postgresql+psycopg://db.test/x"
+FAKE = DeterministicFakeEmbedding(size=SMALL.dimensions)
 
 # PGVectorStore keeps its settings on a private inner store. One test reads it.
 INNER_STORE = "_PGVectorStore__vs"
@@ -197,3 +201,70 @@ def test_each_index_store_gets_its_own_hybrid_config(
     second_config = getattr(second, INNER_STORE).hybrid_search_config
     assert first_config is not None
     assert first_config is not second_config
+
+
+class _RecordingEngine:
+    """Stands in for `PGEngine` in the lifecycle tests: records `close()`."""
+
+    opened: ClassVar[list[_RecordingEngine]] = []
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.closed = False
+
+    @classmethod
+    def from_connection_string(cls, url: str) -> _RecordingEngine:
+        engine = cls(url)
+        cls.opened.append(engine)
+        return engine
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def recording_engine(monkeypatch: pytest.MonkeyPatch) -> list[_RecordingEngine]:
+    _RecordingEngine.opened = []
+    monkeypatch.setattr(store, "PGEngine", _RecordingEngine)
+    return _RecordingEngine.opened
+
+
+def test_connected_closes_the_engine_when_the_block_ends(
+    recording_engine: list[_RecordingEngine],
+) -> None:
+    with store.connected(URL) as engine:
+        assert not recording_engine[0].closed
+    assert engine is recording_engine[0]
+    assert engine.closed
+
+
+def test_connected_closes_the_engine_when_the_block_raises(
+    recording_engine: list[_RecordingEngine],
+) -> None:
+    with pytest.raises(RuntimeError, match="boom"), store.connected(URL):
+        raise RuntimeError("boom")
+    assert recording_engine[0].closed
+
+
+def test_searching_closes_its_engine_when_opening_the_store_fails(
+    recording_engine: list[_RecordingEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing_table(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("no table")
+
+    monkeypatch.setattr(store, "open_search_store", missing_table)
+    with (
+        pytest.raises(ValueError, match="no table"),
+        store.searching(URL, SMALL, FAKE),
+    ):
+        pass
+    assert recording_engine[0].closed
+
+
+def test_searching_yields_a_search_store_on_a_real_table(
+    empty_database_url: str, embeddings: DeterministicFakeEmbedding
+) -> None:
+    with store.connected(empty_database_url) as engine:
+        store.create_table(engine, SMALL, embeddings)
+    with store.searching(empty_database_url, SMALL, embeddings, ef_search=64) as search_store:
+        assert search_store.similarity_search("anything", k=1) == []

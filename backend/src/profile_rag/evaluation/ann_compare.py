@@ -24,12 +24,12 @@ each setting, so a report shows whether the index was used at all.
 The report (`docs/eval/hnsw-<set>-<model>.md`) holds numbers, settings, and
 plan node names only. Never question or chunk text.
 
-Tests: backend/tests/test_ann_compare.py.
+Tests: backend/tests/test_hnsw.py (overlap, the runs, and the CLI command).
 """
 
-import asyncio
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import override
@@ -175,18 +175,16 @@ def run_ann_compare(
         for plan in ("default", "index", "exact")
     }
 
-    engines = [hnsw.open_engine(url, plan="exact")]
-    try:
-        exact = dense_retriever(open_search_store(engines[0], model, cached), k=k, filter=VISIBLE)
+    # One engine per run; the stack closes every one of them, also on an error.
+    with ExitStack() as engines:
+        exact_engine = engines.enter_context(hnsw.open_engine(url, plan="exact"))
+        exact = dense_retriever(open_search_store(exact_engine, model, cached), k=k, filter=VISIBLE)
         by_ef: dict[int, BaseRetriever] = {}
         for ef_search in ef_values:
-            engines.append(hnsw.open_engine(url, plan="index"))
-            store = open_search_store(engines[-1], model, cached, ef_search=ef_search)
+            engine = engines.enter_context(hnsw.open_engine(url, plan="index"))
+            store = open_search_store(engine, model, cached, ef_search=ef_search)
             by_ef[ef_search] = dense_retriever(store, k=k, filter=VISIBLE)
         exact_summary, results = compare_runs(questions, exact=exact, by_ef=by_ef, k=k)
-    finally:
-        for engine in engines:
-            asyncio.run(engine.close())
     return AnnComparison(
         set_name=set_name,
         model=model.key,

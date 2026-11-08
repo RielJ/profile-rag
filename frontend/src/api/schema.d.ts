@@ -117,6 +117,11 @@ export interface components {
             /** Source Title */
             source_title: string;
             /**
+             * Section
+             * @description The headings above the chunk, without the source's top heading, joined by ' > '. Null when the chunk has no heading below the top one.
+             */
+            section: string | null;
+            /**
              * Url
              * @description The source's public http(s) link, or null when it has none.
              */
@@ -128,7 +133,7 @@ export interface components {
             attribution: "self_authored" | "self_report" | "project_doc" | "third_party";
             /**
              * Excerpt
-             * @description The start of the chunk's text, shortened.
+             * @description The start of the chunk's text after its headings, shortened. Each paragraph and list item is on its own line.
              */
             excerpt: string;
         };

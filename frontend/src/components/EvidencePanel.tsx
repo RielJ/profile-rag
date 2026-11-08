@@ -26,6 +26,9 @@ export function EvidencePanel({ citations }: { citations: Citation[] }) {
                     </a>
                   )}
                 </p>
+                {citation.section === null ? null : (
+                  <p className="evidence-section">{citation.section}</p>
+                )}
                 <p className="evidence-attribution">{ATTRIBUTION_LABELS[citation.attribution]}</p>
                 <blockquote className="evidence-excerpt">{citation.excerpt}</blockquote>
               </div>

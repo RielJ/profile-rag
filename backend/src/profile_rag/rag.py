@@ -5,7 +5,8 @@ generation/chain.py and maps its result to the API's `AskResponse`
 (api/models.py). It adds no answer logic of its own:
 
 - `Answered` becomes `AnsweredResponse`, with one `Citation` per cited
-  chunk, taken from the chunk's metadata.
+  chunk, taken from the chunk's metadata. The excerpt starts after the
+  chunk's heading line, and `section` gives those headings instead.
 - `Unknown` becomes `UnknownResponse`. An empty retrieval is an `Unknown`
   made by the chain without a model call.
 - Each error the chain raises becomes a `FailedResponse` with a fixed code
@@ -27,6 +28,7 @@ Tests: backend/tests/test_api_contract.py.
 """
 
 import logging
+import re
 import threading
 from collections.abc import Callable
 from typing import Any, override
@@ -50,6 +52,7 @@ from profile_rag.api.models import (
     FailedResponse,
     UnknownResponse,
 )
+from profile_rag.corpus.splitting import HEADING_SEPARATOR, heading_line
 from profile_rag.generation.answer import InventedCitation, Unknown
 from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.pi_rpc import PiError, PiTimeout
@@ -154,14 +157,35 @@ def to_response(result: GroundedAnswer, model: str | None) -> AskResponse:
 
 def to_citation(doc: Document) -> Citation:
     metadata = doc.metadata
+    path: list[str] = metadata.get("heading_path") or []
     return Citation(
         chunk_id=metadata["chunk_id"],
         source_id=metadata["source_id"],
         source_title=metadata["title"],
+        section=section(path),
         url=public_url(metadata.get("url")),
         attribution=metadata["attribution"],
-        excerpt=excerpt(doc.page_content),
+        excerpt=excerpt(body(doc.page_content, path)),
     )
+
+
+def section(heading_path: list[str]) -> str | None:
+    """The headings below the top one, joined by " > ", or None if there are none.
+
+    The top heading is usually the document's title, which the citation
+    already has as `source_title`.
+    """
+    return HEADING_SEPARATOR.join(heading_path[1:]) or None
+
+
+def body(text: str, heading_path: list[str]) -> str:
+    """`text` without the heading line that splitting.chunk_text put first.
+
+    Text that does not start with that line is returned whole, so a chunk
+    from an older splitter still gets an excerpt.
+    """
+    line = heading_line(heading_path)
+    return text.removeprefix(f"{line}\n\n") if line else text
 
 
 def public_url(value: object) -> str | None:
@@ -176,18 +200,50 @@ def public_url(value: object) -> str | None:
 
 
 def excerpt(text: str, limit: int = EXCERPT_CHARS) -> str:
-    """`text` with whitespace collapsed, cut at a word boundary to at most `limit` characters.
+    """`text` as plain lines, cut at a word boundary to at most `limit` characters.
 
-    A cut text ends with an ellipsis, which counts toward `limit`.
+    See `lines` for how Markdown becomes lines. A cut text ends with an
+    ellipsis, which counts toward `limit`.
     """
-    flat = " ".join(text.split())
+    flat = "\n".join(lines(text))
     if len(flat) <= limit:
         return flat
     cut = flat[: limit - 1]
-    space = cut.rfind(" ")
+    space = max(cut.rfind(" "), cut.rfind("\n"))
     if space > 0:
         cut = cut[:space]
     return cut.rstrip() + "…"
+
+
+LIST_ITEM = re.compile(r"([-*+]|\d+[.)])\s")
+FENCE = re.compile(r"(```|~~~)")
+
+
+def lines(text: str) -> list[str]:
+    """The paragraphs, list items, and code lines of Markdown `text`, one per line.
+
+    Spaces collapse to one. The lines of a wrapped paragraph join with a
+    space. Code fence markers are dropped, and each line inside a fence
+    stays its own line.
+    """
+    out: list[str] = []
+    joinable = False  # whether the next line continues the last one
+    in_fence = False
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if FENCE.match(line):
+            in_fence = not in_fence
+            joinable = False
+        elif not line:
+            joinable = False
+        elif in_fence:
+            out.append(line)
+        elif joinable and not LIST_ITEM.match(line):
+            out[-1] += " " + line
+        else:
+            out.append(line)
+            joinable = True
+    return out
 
 
 class ChainCache:

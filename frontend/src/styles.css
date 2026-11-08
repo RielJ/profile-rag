@@ -328,6 +328,12 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.evidence-section {
+  font-size: 0.9375rem;
+  margin-bottom: 0.125rem;
+  overflow-wrap: anywhere;
+}
+
 .evidence-attribution {
   font-size: 0.875rem;
   color: var(--muted);
@@ -338,6 +344,7 @@ button:disabled {
   margin: 0;
   color: var(--text);
   font-size: 0.9375rem;
+  white-space: pre-line; /* one paragraph or list item per line; still plain text */
   overflow-wrap: anywhere;
 }
 

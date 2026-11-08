@@ -59,11 +59,18 @@ class Citation(BaseModel):
     chunk_id: str
     source_id: str
     source_title: str
+    section: str | None = Field(
+        description="The headings above the chunk, without the source's top heading, "
+        "joined by ' > '. Null when the chunk has no heading below the top one."
+    )
     url: str | None = Field(
         description="The source's public http(s) link, or null when it has none."
     )
     attribution: Attribution
-    excerpt: str = Field(description="The start of the chunk's text, shortened.")
+    excerpt: str = Field(
+        description="The start of the chunk's text after its headings, shortened. "
+        "Each paragraph and list item is on its own line."
+    )
 
 
 class AnsweredResponse(BaseModel):

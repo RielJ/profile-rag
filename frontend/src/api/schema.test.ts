@@ -32,6 +32,7 @@ describe("AskResponse", () => {
           chunk_id: "lantern:v1:a",
           source_id: "lantern",
           source_title: "lantern-queue README",
+          section: null,
           url: null,
           attribution: "project_doc",
           excerpt: "Dana maintains lantern-queue.",

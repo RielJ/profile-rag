@@ -36,6 +36,7 @@ from profile_rag.api.deps import get_chains, get_pool
 from profile_rag.api.models import FailedCode
 from profile_rag.corpus.registry import load_registry
 from profile_rag.corpus.sources_table import sync_sources
+from profile_rag.corpus.splitting import chunk_text
 from profile_rag.db.migrate import migrate
 from profile_rag.db.pool import Pool, create_pool
 from profile_rag.generation.chain import NO_EVIDENCE_REASON
@@ -157,6 +158,7 @@ def test_answered_has_one_citation_per_cited_chunk_with_its_source() -> None:
             "chunk_id": "notes:v1:a",
             "source_id": "notes",
             "source_title": "Migration notes",
+            "section": None,
             "url": None,
             "attribution": "project_doc",
             "excerpt": "Dana moved the queue to Postgres.",
@@ -165,6 +167,7 @@ def test_answered_has_one_citation_per_cited_chunk_with_its_source() -> None:
             "chunk_id": "local:v1:a",
             "source_id": "local",
             "source_title": "Local copy",
+            "section": None,
             "url": None,  # not an http(s) link, so not shown
             "attribution": "project_doc",
             "excerpt": "Dana writes Rust.",
@@ -177,6 +180,41 @@ def test_answered_has_one_citation_per_cited_chunk_with_its_source() -> None:
     assert first["excerpt"].endswith("…")
     assert LONG_TEXT.startswith(first["excerpt"].removesuffix("…"))
     assert len(body["citations"]) == 3, "a repeated citation is listed once"
+
+
+def test_a_citation_names_its_section_and_its_excerpt_starts_after_the_headings() -> None:
+    path = ["Dana Whitlock - Resume", "Experience", "Staff Engineer, Acme"]
+    body = (
+        "Moved four services\nto Kubernetes.\n\n"
+        "- Led the queue migration.\n"
+        "- Cut deploy time\n  from 40 to 6 minutes.\n"
+        "1. First item\n\n"
+        "Run a worker:\n```bash\nlantern-queue worker\n  --concurrency 4\n```"
+    )
+    doc = chunk("resume:v2:a", chunk_text(path, body), "Resume", None)
+    doc.metadata["heading_path"] = path
+    body_json = post(replying(answered("resume:v2:a"), docs=[doc])).json()
+
+    (citation,) = body_json["citations"]
+    assert citation["section"] == "Experience > Staff Engineer, Acme"
+    assert citation["excerpt"] == (
+        "Moved four services to Kubernetes.\n"
+        "- Led the queue migration.\n"
+        "- Cut deploy time from 40 to 6 minutes.\n"
+        "1. First item\n"
+        "Run a worker:\n"
+        "lantern-queue worker\n"
+        "--concurrency 4"
+    )
+
+
+def test_a_citation_under_only_the_top_heading_has_no_section() -> None:
+    path = ["Dana Whitlock - Resume"]
+    doc = chunk("resume:v2:b", chunk_text(path, "Dana writes Rust."), "Resume", None)
+    doc.metadata["heading_path"] = path
+    (citation,) = post(replying(answered("resume:v2:b"), docs=[doc])).json()["citations"]
+    assert citation["section"] is None
+    assert citation["excerpt"] == "Dana writes Rust."
 
 
 def test_answered_reports_the_model_named_in_the_reply() -> None:

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ask, type AskResponse, type AskResult } from "./api/client.ts";
 import { fetchHealth, type HealthResponse } from "./api/health.ts";
 import { AnswerView } from "./components/AnswerView.tsx";
@@ -10,6 +10,7 @@ type AskState = { kind: "idle" } | { kind: "loading" } | { kind: "done"; result:
 
 export default function App() {
   const [state, setState] = useState<AskState>({ kind: "idle" });
+  const [health, checkHealth] = useHealth();
   const inFlight = useRef<AbortController | null>(null);
 
   useEffect(() => () => inFlight.current?.abort(), []);
@@ -22,6 +23,7 @@ export default function App() {
     const result = await ask(question, { signal: controller.signal });
     if (controller.signal.aborted) return;
     setState({ kind: "done", result });
+    checkHealth(); // the answer may have failed because the server went down
   }
 
   const loading = state.kind === "loading";
@@ -31,9 +33,9 @@ export default function App() {
       <header className="intro">
         <h1>Ask about this person’s work</h1>
         <p>
-          Answers come only from approved sources, such as a resume, project documentation, and
-          posts. Each answer lists the evidence it used. When the sources do not say, the page tells
-          you so instead of guessing.
+          Answers come only from sources the owner has reviewed and approved, such as a resume,
+          project docs, and blog posts. Each answer links to the excerpts it used. If the sources
+          don’t cover a question, you get no answer instead of a guess.
         </p>
       </header>
       <main>
@@ -51,7 +53,7 @@ export default function App() {
         </section>
       </main>
       <footer>
-        <HealthLine />
+        <p className="health">{healthLine(health)}</p>
       </footer>
     </div>
   );
@@ -91,7 +93,7 @@ function responseLine(response: AskResponse): string {
   switch (response.status) {
     case "answered": {
       const count = response.citations.length;
-      return `Answer ready, with ${count} evidence ${count === 1 ? "item" : "items"}.`;
+      return `Answer ready. It cites ${count} ${count === 1 ? "excerpt" : "excerpts"}.`;
     }
     case "unknown":
       return "Not in the evidence. No answer given.";
@@ -110,31 +112,60 @@ type HealthState =
   | { kind: "loaded"; health: HealthResponse }
   | { kind: "failed" };
 
-function HealthLine() {
+const HEALTH_RETRY_MS = 5000;
+
+// GET /api/health, checked when the page loads and whenever the returned
+// function is called. While the server is unreachable or degraded, it checks
+// again every HEALTH_RETRY_MS, so the footer recovers without a reload.
+function useHealth(): [HealthState, () => void] {
   const [state, setState] = useState<HealthState>({ kind: "loading" });
+  const checkNow = useRef<() => void>(() => {});
 
   useEffect(() => {
-    // Abort the request if the component unmounts before it finishes.
     const controller = new AbortController();
-    fetchHealth(controller.signal)
-      .then((health) => setState({ kind: "loaded", health }))
-      .catch(() => {
-        if (!controller.signal.aborted) setState({ kind: "failed" });
-      });
-    return () => controller.abort();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let latest = 0; // a newer check makes the replies of older ones stale
+
+    function check() {
+      clearTimeout(retry);
+      const id = ++latest;
+      fetchHealth(controller.signal)
+        .then((health) => {
+          if (id !== latest) return;
+          setState({ kind: "loaded", health });
+          if (health.status !== "ok") retry = setTimeout(check, HEALTH_RETRY_MS);
+        })
+        .catch(() => {
+          if (controller.signal.aborted || id !== latest) return;
+          setState({ kind: "failed" });
+          retry = setTimeout(check, HEALTH_RETRY_MS);
+        });
+    }
+
+    checkNow.current = check;
+    check();
+    return () => {
+      controller.abort();
+      clearTimeout(retry);
+    };
   }, []);
 
+  const recheck = useCallback(() => checkNow.current(), []);
+  return [state, recheck];
+}
+
+const RETRY_SECONDS = HEALTH_RETRY_MS / 1000;
+
+function healthLine(state: HealthState): string {
   switch (state.kind) {
     case "loading":
-      return <p className="health">Checking the server…</p>;
+      return "Checking the server…";
     case "failed":
-      return <p className="health">Server unreachable.</p>;
+      return `Can’t reach the server. Trying again every ${RETRY_SECONDS} seconds.`;
     case "loaded":
-      return (
-        <p className="health">
-          Server: {state.health.status}. Database: {state.health.database}.
-        </p>
-      );
+      return state.health.database === "ok"
+        ? "Server and database are up."
+        : `The database is unavailable, so questions will fail. Trying again every ${RETRY_SECONDS} seconds.`;
     default: {
       const unreachable: never = state;
       return unreachable;

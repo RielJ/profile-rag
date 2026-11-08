@@ -20,19 +20,20 @@ function mockFetch(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("App: server status line", () => {
   it("shows a healthy backend", async () => {
     mockFetch(async () => jsonResponse(200, HEALTHY));
     render(<App />);
-    expect(await screen.findByText("Server: ok. Database: ok.")).toBeInTheDocument();
+    expect(await screen.findByText("Server and database are up.")).toBeInTheDocument();
   });
 
   it("shows a degraded backend (HTTP 503 still has a body)", async () => {
     mockFetch(async () => jsonResponse(503, { status: "degraded", database: "unavailable" }));
     render(<App />);
-    expect(await screen.findByText("Server: degraded. Database: unavailable.")).toBeInTheDocument();
+    expect(await screen.findByText(/^The database is unavailable/)).toBeInTheDocument();
   });
 
   it("says when the backend cannot be reached", async () => {
@@ -40,7 +41,41 @@ describe("App: server status line", () => {
       throw new TypeError("Failed to fetch");
     });
     render(<App />);
-    expect(await screen.findByText("Server unreachable.")).toBeInTheDocument();
+    expect(await screen.findByText(/^Can’t reach the server/)).toBeInTheDocument();
+  });
+
+  it("tries again while the backend is unreachable, and recovers without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let up = false;
+    const fetchMock = mockFetch(async () => {
+      if (!up) throw new TypeError("Failed to fetch");
+      return jsonResponse(200, HEALTHY);
+    });
+    render(<App />);
+    expect(await screen.findByText(/^Can’t reach the server/)).toBeInTheDocument();
+
+    up = true;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await screen.findByText("Server and database are up.")).toBeInTheDocument();
+
+    const checks = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(fetchMock.mock.calls.length).toBe(checks); // healthy: no more polling
+  });
+
+  it("checks the server again after each answer", async () => {
+    let up = true;
+    mockFetch(async () => {
+      if (!up) throw new TypeError("Failed to fetch");
+      return jsonResponse(200, HEALTHY);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByText("Server and database are up.")).toBeInTheDocument();
+
+    up = false;
+    await user.type(screen.getByLabelText("Your question"), "Salary?{Enter}");
+    expect(await screen.findByText(/^Can’t reach the server/)).toBeInTheDocument();
   });
 });
 
@@ -65,7 +100,7 @@ describe("App: asking", () => {
 
     reply(jsonResponse(200, answered()));
     expect(await screen.findByRole("heading", { name: "Answer" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Answer ready, with 2 evidence items.");
+    expect(screen.getByRole("status")).toHaveTextContent("Answer ready. It cites 2 excerpts.");
     expect(screen.getByRole("region", { name: "Result" })).toHaveAttribute("aria-busy", "false");
     expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
   });

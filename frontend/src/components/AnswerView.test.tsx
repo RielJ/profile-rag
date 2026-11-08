@@ -57,12 +57,14 @@ describe("AnswerView: answered", () => {
       "rel",
       "noopener noreferrer",
     );
-    expect(first).toHaveTextContent("Resume / self-reported");
+    expect(first).toHaveTextContent("Self-reported");
+    expect(first).toHaveTextContent("Experience > Staff Engineer, Acme");
     expect(first).toHaveTextContent("Led the migration of the job queue to PostgreSQL.");
     // No url: the title is plain text.
     expect(within(second).queryByRole("link")).toBeNull();
     expect(second).toHaveTextContent("Why we moved our job queue");
     expect(second).toHaveTextContent("Written by the person");
+    expect(second).not.toHaveTextContent(" > "); // no section line
   });
 
   it("shows the model that answered", () => {
@@ -125,7 +127,7 @@ describe("AnswerView: unknown", () => {
 describe("AnswerView: failed", () => {
   it.each(FAILED_CODES)("%s shows the safe message and the request id", (code) => {
     response(failed(code), FAILED_STATUS[code]);
-    expect(screen.getByRole("heading", { name: "No answer this time" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No answer" })).toBeInTheDocument();
     expect(screen.getByText(`Safe message for ${code}.`)).toBeInTheDocument();
     expect(screen.getByText(`req-${code}`)).toBeInTheDocument();
     // The error code itself is internal; only the message is shown.

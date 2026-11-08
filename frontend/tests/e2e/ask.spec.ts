@@ -36,9 +36,9 @@ test("an answered question links each marker to its evidence item", async ({ pag
   // The item shows a source title and a human attribution label.
   await expect(target.locator(".evidence-title")).not.toBeEmpty();
   await expect(target.locator(".evidence-attribution")).toHaveText(
-    /Written by the person|Resume \/ self-reported|Project documentation|Third-party source/,
+    /Written by the person|Self-reported|Project documentation|Written by someone else/,
   );
-  await expect(page.getByRole("status")).toHaveText("Answer ready, with 2 evidence items.");
+  await expect(page.getByRole("status")).toHaveText("Answer ready. It cites 2 excerpts.");
 });
 
 test("an unanswerable question is shown as not in the evidence", async ({ page }) => {
@@ -47,13 +47,13 @@ test("an unanswerable question is shown as not in the evidence", async ({ page }
   await expect(page.getByRole("heading", { name: "Not in the evidence" })).toBeVisible();
   await expect(page.getByText("The evidence does not mention a salary.")).toBeVisible();
   await expect(page.getByRole("region", { name: "Evidence" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "No answer this time" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "No answer", exact: true })).toHaveCount(0);
 });
 
 test("a failed answer shows the safe message and the request id", async ({ page }) => {
   await askQuestion(page, "E2E-FAIL: what happens when the model fails?");
 
-  await expect(page.getByRole("heading", { name: "No answer this time" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No answer", exact: true })).toBeVisible();
   await expect(
     page.getByText("The answer model could not be reached. Try again later.", { exact: true }),
   ).toBeVisible();

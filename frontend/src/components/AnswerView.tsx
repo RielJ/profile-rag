@@ -95,7 +95,7 @@ function Unknown({ response }: { response: UnknownResponse }) {
   return (
     <article className="notice notice-unknown" aria-labelledby="unknown-heading">
       <h2 id="unknown-heading">Not in the evidence</h2>
-      <p>The approved sources do not answer this question, so no answer is given.</p>
+      <p>The approved sources don’t cover this question, so there is no answer.</p>
       <p className="reason">
         <span className="reason-label">Reason:</span> {response.reason}
       </p>
@@ -107,7 +107,7 @@ function Unknown({ response }: { response: UnknownResponse }) {
 function Failed({ response }: { response: FailedResponse }) {
   return (
     <div className="notice notice-problem">
-      <h2>No answer this time</h2>
+      <h2>No answer</h2>
       <p>{response.message}</p>
       <p className="request-id">
         Request ID: <code>{response.request_id}</code>

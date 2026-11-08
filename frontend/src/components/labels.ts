@@ -5,9 +5,9 @@ import type { Attribution } from "../api/client.ts";
 
 export const ATTRIBUTION_LABELS = {
   self_authored: "Written by the person",
-  self_report: "Resume / self-reported",
+  self_report: "Self-reported",
   project_doc: "Project documentation",
-  third_party: "Third-party source",
+  third_party: "Written by someone else",
 } as const satisfies Record<Attribution, string>;
 
 /** `url` if it parses as an http(s) URL, else null. The API already nulls others. */

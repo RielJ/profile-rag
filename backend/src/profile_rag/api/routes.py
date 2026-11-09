@@ -1,4 +1,5 @@
-"""The API routes: `POST /api/ask`, `GET /api/sources/{id}`, and `GET /api/health`.
+"""The API routes: `POST /api/ask`, `POST /api/ask/stream`, `GET /api/sources/{id}`,
+and `GET /api/health`.
 
 Status codes of `POST /api/ask` (docs/ARCHITECTURE.md, "API"):
 
@@ -11,17 +12,29 @@ Every `POST /api/ask` response carries an `X-Request-ID` header. A failed
 response repeats it in `request_id`, and the server log line for the failure
 names it.
 
-Both new routes are plain `def` functions, so FastAPI runs them in its
-thread pool: the Pi call and the database queries block a worker thread,
-not the event loop.
+`POST /api/ask/stream` always answers 200 once the request is valid: a
+failure arrives as the `failed` response in the last line, because the
+status line is sent before the answer exists. The request ID is in the
+`X-Request-ID` header, as for `POST /api/ask`.
+
+`POST /api/ask` and `GET /api/sources/{id}` are plain `def` functions, so
+FastAPI runs them in its thread pool: the Pi call and the database queries
+block a worker thread, not the event loop. `POST /api/ask/stream` runs
+`rag.ask` in a worker thread too, and passes its draft pieces to the event
+loop through a queue. If the client disconnects, the next draft piece raises
+`rag.Abandoned` in the worker, which stops the Pi process.
 """
 
+import asyncio
 import logging
+import threading
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Path, Response, status
+from fastapi.responses import StreamingResponse
 from psycopg.rows import dict_row
 
 from profile_rag import rag
@@ -30,8 +43,11 @@ from profile_rag.api.deps import ChainsDep, PoolDep
 from profile_rag.api.models import (
     AskRequest,
     AskResponse,
+    AskStreamEvent,
+    DraftEvent,
     FailedCode,
     FailedResponse,
+    ResultEvent,
     SourceResponse,
 )
 from profile_rag.db.pool import Pool
@@ -67,6 +83,61 @@ def ask(body: AskRequest, chains: ChainsDep, response: Response) -> AskResponse:
     if isinstance(result.root, FailedResponse):
         response.status_code = FAILED_STATUS[result.root.error]
     return result
+
+
+class NDJSONResponse(StreamingResponse):
+    """A stream of newline-delimited JSON. Named so OpenAPI shows its media type."""
+
+    media_type = "application/x-ndjson"
+
+
+_STREAM_DOC: dict[int | str, dict[str, Any]] = {
+    200: {
+        "model": AskStreamEvent,
+        "description": "Newline-delimited JSON: `draft` events, then one `result` event.",
+    }
+}
+
+
+@router.post("/ask/stream", tags=["ask"], response_class=NDJSONResponse, responses=_STREAM_DOC)
+async def ask_stream(body: AskRequest, chains: ChainsDep) -> NDJSONResponse:
+    """Answer a question as `POST /api/ask` does, streaming the draft answer first."""
+    request_id = uuid.uuid4().hex
+    chain = chains.get(body.mode, body.k)
+    return NDJSONResponse(
+        _ask_events(body.question, chain, request_id),
+        headers={"X-Request-ID": request_id, "Cache-Control": "no-store"},
+    )
+
+
+async def _ask_events(question: str, chain: rag.AnswerChain, request_id: str) -> AsyncIterator[str]:
+    loop = asyncio.get_running_loop()
+    lines: asyncio.Queue[DraftEvent | ResultEvent] = asyncio.Queue()
+    gone = threading.Event()
+
+    def on_draft(text: str) -> None:  # runs in the worker thread
+        if gone.is_set():
+            raise rag.Abandoned
+        loop.call_soon_threadsafe(lines.put_nowait, DraftEvent(type="draft", text=text))
+
+    def run() -> None:
+        try:
+            result = rag.ask(question, chain, request_id=request_id, on_draft=on_draft)
+        except rag.Abandoned:
+            logger.info("ask abandoned, client disconnected: request_id=%s", request_id)
+            return
+        loop.call_soon_threadsafe(lines.put_nowait, ResultEvent(type="result", response=result))
+
+    worker = loop.run_in_executor(None, run)
+    try:
+        while True:
+            event = await lines.get()
+            yield event.model_dump_json() + "\n"
+            if isinstance(event, ResultEvent):
+                break
+        await worker
+    finally:
+        gone.set()  # the client left early, or the stream is done: drafts are no longer wanted
 
 
 def find_source(pool: Pool, source_id: str, *, timeout: float) -> SourceResponse | None:

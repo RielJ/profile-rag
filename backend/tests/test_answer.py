@@ -12,6 +12,7 @@ from profile_rag.generation.answer import (
     InventedCitation,
     Unknown,
     check_citations,
+    draft_text,
 )
 
 parser = PydanticOutputParser(pydantic_object=Answer)
@@ -82,3 +83,25 @@ def test_an_invented_citation_raises_and_lists_each_unknown_id_once() -> None:
 def test_an_unknown_answer_has_no_citations_to_check() -> None:
     answer = Answer(Unknown(status="unknown", reason="No evidence."))
     assert check_citations(answer, []) is answer
+
+
+@pytest.mark.parametrize(
+    ("partial", "draft"),
+    [
+        ("", ""),
+        ('{"sta', ""),
+        ('{"status": "answered", "ans', ""),
+        ('{"status": "answered", "answer": "He cut', "He cut"),
+        ('{"status": "answered", "answer": "a \\"quoted', 'a "quoted'),
+        ('{"status": "answered", "answer": "line\\nnext', "line\nnext"),
+        ('{"status": "answered", "answer": "done.", "citations": ["c', "done."),
+        ('```json\n{"status": "unknown", "reason": "Not in', "Not in"),
+        ('{"status": "answered", "answer": 3', ""),
+        ("[1, 2", ""),
+        ("not json at all", ""),
+    ],
+)
+def test_draft_text_reads_the_answer_or_reason_from_a_cut_off_reply(
+    partial: str, draft: str
+) -> None:
+    assert draft_text(partial) == draft

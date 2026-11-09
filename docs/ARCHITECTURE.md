@@ -96,7 +96,7 @@ All paths are under `backend/src/profile_rag/`.
 | `db/` | Connection pool and the migration runner for `db/migrations/`. |
 | `rag.py` | `ask(question, chain, request_id=)`: runs the answer chain and maps its result or error to the API's `AskResponse`. `ChainCache` keeps one chain per mode and `k`. |
 | `api/models.py` | The API contract: `AskRequest`, the `AskResponse` union, `Citation`, and `SourceResponse`. |
-| `api/routes.py` | `POST /api/ask`, `GET /api/sources/{id}`, and the status code of each failure. |
+| `api/routes.py` | `POST /api/ask`, `POST /api/ask/stream`, `GET /api/sources/{id}`, and the status code of each failure. |
 | `api/search.py` | `open_chains(settings)`: the startup checks and the search store behind `POST /api/ask`. |
 | `api/openapi.py` | Writes the OpenAPI schema to a file without starting a server, for `make types`. |
 | `api/log_config.py` | `configure_logging()`: sends the `profile_rag` loggers to stderr at `PROFILE_RAG_LOG_LEVEL` (default `INFO`). `create_app()` calls it. |
@@ -353,11 +353,12 @@ The chain stays the default answer path. On the example set, the graph answered 
 
 ## API
 
-The FastAPI application in `api/` serves three routes under `/api`. The request and response models in `api/models.py` are the contract. Every model forbids unknown fields.
+The FastAPI application in `api/` serves four routes under `/api`. The request and response models in `api/models.py` are the contract. Every model forbids unknown fields.
 
 | Route | Does |
 | --- | --- |
 | `POST /api/ask` | Answers a question with the answer chain (`generation/chain.py`), as `profile-rag ask` does. The agent graph is not used ([`docs/eval/agent-decision.md`](eval/agent-decision.md)). |
+| `POST /api/ask/stream` | Answers the same way, and streams the answer text while the model writes it. The page uses this route. |
 | `GET /api/sources/{id}` | Returns the metadata of one approved, visible source. |
 | `GET /api/health` | Reports the database: 200 when it answers, 503 when it does not. |
 
@@ -365,7 +366,7 @@ The FastAPI application in `api/` serves three routes under `/api`. The request 
 
 The lifespan in `api/app.py` opens the connection pool, then calls `api/search.py`'s `open_chains` in a worker thread. `open_chains` runs the checks of `ask`: `PROFILE_RAG_API_MODEL` (default `nomic-v15`) names a model in `vectorstore/models.py`, Ollama has that model with the expected digest, and the model's chunk table exists. With tracing on, it also checks that the table holds exactly `corpus-example/`. If a check fails, the server does not start. It then opens the search store and builds the default chain, for `PROFILE_RAG_API_MODE` (default `hybrid`) and `PROFILE_RAG_API_K` (default 8). A request that sets `mode` or `k` gets the chain for that pair, which `rag.ChainCache` builds once and keeps. The routes get the cache through `Depends(get_chains)`; tests replace it with one built from a fake retriever and `FakeListChatModel`.
 
-`ask` and `get_source` are plain `def` functions, so FastAPI runs them in its thread pool. The Pi call (up to `PROFILE_RAG_PI_TIMEOUT_SECONDS`) blocks a worker thread, not the event loop.
+`ask` and `get_source` are plain `def` functions, so FastAPI runs them in its thread pool. The Pi call (up to `PROFILE_RAG_PI_TIMEOUT_SECONDS`) blocks a worker thread, not the event loop. `ask_stream` is `async`, and runs the Pi call in the same thread pool ("Streaming").
 
 ### Ask
 
@@ -382,6 +383,22 @@ The response is `AskResponse`, a `RootModel` over three variants with `status` a
 `rag.ask` maps the chain's result and adds no logic of its own. A citation is `{chunk_id, source_id, source_title, url, attribution, excerpt}`, one per chunk the answer cites (`GroundedAnswer.cited_docs()`), in citation order. The values come from the chunk's metadata. `excerpt` is the chunk text with whitespace collapsed, cut at a word boundary to at most 280 characters. `url` is the source's `url` from `sources.yaml` when it is an `http://` or `https://` link, and null otherwise. Only approved chunks with visibility `public` or `sanitized` are retrieved, so a citation only names a source that may be shown.
 
 `model` is the `model_name` that the chat model puts in its reply's `response_metadata`: for `PiChatModel`, Pi's `provider/model`. A callback (`rag.ModelName`) reads it, so the chain does not change. It is null when no model ran (nothing was retrieved) or the model reported no name.
+
+### Streaming
+
+`POST /api/ask/stream` takes the same request and returns newline-delimited JSON (`application/x-ndjson`), one `AskStreamEvent` per line:
+
+```text
+{"type": "draft", "text": "Dana built "}
+{"type": "draft", "text": "a job queue"}
+{"type": "result", "response": AskResponse}
+```
+
+The `draft` events carry the answer, or the reason of an `unknown` reply, as the model writes it. The last line is one `result` event with the `AskResponse` that `POST /api/ask` would return. A draft is unchecked: the reply is parsed and its citations are checked only when it is complete, so the result can still be `unknown` or `failed`, and the client must replace the draft with it. The page shows the draft without citation links, then swaps in the checked answer, or the failure message without the draft.
+
+The pieces come from Pi. `pi_rpc.run_prompt` passes the text of each `message_update` record with a `text_delta` event to an `on_text` callback, and `PiChatModel` forwards each piece as LangChain's `on_llm_new_token`. The reply is JSON, so the raw tokens are not shown. `rag.DraftText`, a callback handler, joins the pieces and reads the `answer` or `reason` field out of the partial JSON with `generation/answer.py`'s `draft_text`. It sends only text that extends what it already sent. A field cut inside an escape sequence can briefly be unreadable, and then nothing is sent until the field grows again.
+
+The status code is 200 once the request is valid, because it is sent before the answer exists. A failure arrives as the `failed` response in the last line, with the same code, message, and log line as in `POST /api/ask`, and the request ID is in the `X-Request-ID` header. An invalid request still returns 422. The route runs `rag.ask` in a worker thread, which hands each draft piece to the event loop through a queue. When the client disconnects, the next piece raises `rag.Abandoned` in the worker. That ends the Pi call and kills the process, and the server logs one INFO line with the request ID, not a failure.
 
 ### Failures and status codes
 

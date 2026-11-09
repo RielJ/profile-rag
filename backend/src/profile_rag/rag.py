@@ -20,6 +20,15 @@ generation/chain.py and maps its result to the API's `AskResponse`
 callback, reads it, so the chain does not change. It is None when no model
 ran or the model reported none.
 
+Streaming. With `on_draft`, `ask` also passes on the answer (or reason) as
+the model writes it, one new piece of text per call (`DraftText`). The
+pieces are an unchecked draft: the returned `AskResponse` is the only result
+to trust, and it can still be `unknown` or `failed`. To abandon the
+question, for example because the client left, `on_draft` raises `Abandoned`:
+the model call stops and `ask` raises `Abandoned` instead of returning. Any
+other exception from `on_draft` also stops the call and is a bug
+(`internal_error`).
+
 `ChainCache` builds one chain per (mode, k) and keeps it. The API makes one
 at startup (api/search.py); tests make one from a fake retriever and a fake
 chat model.
@@ -53,7 +62,7 @@ from profile_rag.api.models import (
     UnknownResponse,
 )
 from profile_rag.corpus.splitting import HEADING_SEPARATOR, heading_line
-from profile_rag.generation.answer import InventedCitation, Unknown
+from profile_rag.generation.answer import InventedCitation, Unknown, draft_text
 from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.pi_rpc import PiError, PiTimeout
 from profile_rag.retrievers.factory import SearchMode
@@ -104,6 +113,37 @@ class ModelName(BaseCallbackHandler):
                         self.value = name
 
 
+class Abandoned(Exception):
+    """Raised by an `on_draft` callback to stop a question nobody waits for."""
+
+
+class DraftText(BaseCallbackHandler):
+    """Passes each new piece of the reply's answer or reason to `on_draft`.
+
+    The reply is JSON (generation/answer.py), so the raw tokens are not shown:
+    `draft_text` reads the text field out of the reply so far, and only text
+    that extends what was already sent goes out. A draft that briefly shrinks,
+    as it can inside an escape sequence, sends nothing until it grows again.
+    """
+
+    raise_error = True  # an exception from on_draft must stop the model call
+
+    def __init__(self, on_draft: Callable[[str], None]) -> None:
+        self.on_draft = on_draft
+        self.reply = ""
+        self.sent = ""
+
+    @override
+    def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
+        if not isinstance(token, str):
+            return
+        self.reply += token
+        draft = draft_text(self.reply)
+        if len(draft) > len(self.sent) and draft.startswith(self.sent):
+            self.on_draft(draft[len(self.sent) :])
+            self.sent = draft
+
+
 def failure_code(error: Exception) -> FailedCode:
     """The `FailedCode` of an error the chain raised."""
     if isinstance(error, PiTimeout):
@@ -119,16 +159,29 @@ def failure_code(error: Exception) -> FailedCode:
     return "internal_error"
 
 
-def ask(question: str, chain: AnswerChain, *, request_id: str) -> AskResponse:
+def ask(
+    question: str,
+    chain: AnswerChain,
+    *,
+    request_id: str,
+    on_draft: Callable[[str], None] | None = None,
+) -> AskResponse:
     """Run `chain` on `question` and return its result as an `AskResponse`.
 
     Never raises for an error of the chain: it returns a `FailedResponse`
     and logs one line with the exception class and `request_id`.
+    `on_draft`, if given, receives the draft text while the model writes.
+    Raises `Abandoned` if `on_draft` raised it.
     """
     model = ModelName()
+    callbacks: list[BaseCallbackHandler] = [model]
+    if on_draft is not None:
+        callbacks.append(DraftText(on_draft))
     try:
-        result = chain.invoke({"question": question}, {"callbacks": [model]})
+        result = chain.invoke({"question": question}, {"callbacks": callbacks})
         return to_response(result, model.value)
+    except Abandoned:
+        raise
     except Exception as error:
         code = failure_code(error)
         # The class name only: str(error) can hold the model's reply or Pi's stderr.

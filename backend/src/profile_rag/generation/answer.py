@@ -13,6 +13,10 @@ meaning: every cited chunk_id must be one of the chunks the model was shown.
 class: `PydanticOutputParser(pydantic_object=Answered | Unknown)` is accepted
 but raises TypeError on the first parse.
 
+`draft_text` reads the answer or reason out of a reply that is still being
+written, so the API can stream it. A draft is shown, never trusted: only the
+complete reply goes through the parser and the citation check.
+
 Tests: backend/tests/test_answer.py.
 """
 
@@ -20,6 +24,7 @@ from collections.abc import Sequence
 from typing import Annotated, Literal
 
 from langchain_core.documents import Document
+from langchain_core.utils.json import parse_partial_json
 from pydantic import BaseModel, ConfigDict, Field, RootModel, StringConstraints
 
 # At least one character that is not whitespace.
@@ -70,3 +75,26 @@ def check_citations(answer: Answer, docs: Sequence[Document]) -> Answer:
     if invented:
         raise InventedCitation(invented)
     return answer
+
+
+def draft_text(partial_reply: str) -> str:
+    """The `answer` or `reason` text in a reply that may be cut off, else "".
+
+    Tolerates a reply cut anywhere, including inside a string or an escape
+    sequence, and a leading ```json fence. Text the model has not finished
+    escaping may be missing for a moment, so a draft can briefly shrink.
+    """
+    text = partial_reply.lstrip()
+    if text.startswith("```"):
+        text = text.partition("\n")[2]
+    try:
+        reply = parse_partial_json(text)
+    except ValueError:
+        return ""
+    if not isinstance(reply, dict):
+        return ""
+    for key in ("answer", "reason"):
+        value = reply.get(key)
+        if isinstance(value, str):
+            return value
+    return ""

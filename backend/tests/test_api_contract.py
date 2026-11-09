@@ -27,6 +27,7 @@ from langchain_core.language_models.fake_chat_models import (
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
+from pydantic import Field
 
 from profile_rag import rag
 from profile_rag.api import app as app_module
@@ -427,6 +428,124 @@ def test_sources_is_503_when_the_database_is_down(unreachable_pool: Pool) -> Non
     assert response.status_code == 503
 
 
+# --- streaming ---------------------------------------------------------------
+
+
+class TokenModel(FakeListChatModel):
+    """A FakeListChatModel that also reports its reply in pieces, as PiChatModel does."""
+
+    piece: int = 7
+    sent: list[str] = Field(default_factory=list)
+
+    @override
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        result = super()._generate(messages, stop, run_manager, **kwargs)
+        text = result.generations[0].message.text
+        for start in range(0, len(text), self.piece):
+            self.sent.append(text[start : start + self.piece])
+            if run_manager is not None:
+                run_manager.on_llm_new_token(text[start : start + self.piece])
+        return result
+
+
+def stream(client: TestClient, question: str = "What does Dana maintain?") -> httpx2.Response:
+    return client.post("/api/ask/stream", json={"question": question})
+
+
+def events(response: httpx2.Response) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in response.text.splitlines()]
+
+
+def drafts(response: httpx2.Response) -> str:
+    return "".join(e["text"] for e in events(response) if e["type"] == "draft")
+
+
+def test_stream_sends_the_answer_as_drafts_then_the_same_result_as_ask() -> None:
+    answer = 'Dana maintains "lantern-queue",\na job queue.'
+    reply = answered("lantern:v1:a", answer=answer)
+    response = stream(client_for(Retriever(DOCS), TokenModel(responses=[reply])))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert len(response.headers["X-Request-ID"]) == 32
+    lines = events(response)
+    assert len(lines) > 3
+    assert all(e["type"] == "draft" for e in lines[:-1])
+    assert drafts(response) == answer
+    assert lines[-1] == {"type": "result", "response": post(replying(reply)).json()}
+
+
+def test_stream_sends_the_reason_of_an_unknown_answer() -> None:
+    reply = json.dumps({"status": "unknown", "reason": "The evidence does not say."})
+    response = stream(client_for(Retriever(DOCS), TokenModel(responses=[reply])))
+    assert drafts(response) == "The evidence does not say."
+    assert events(response)[-1]["response"]["status"] == "unknown"
+
+
+def test_a_streamed_draft_is_not_the_answer_when_the_check_fails() -> None:
+    reply = answered("invented:v1:a", answer=SECRET)
+    response = stream(client_for(Retriever(DOCS), TokenModel(responses=[reply])))
+    assert response.status_code == 200  # sent before the answer existed
+    result = events(response)[-1]["response"]
+    assert result["status"] == "failed"
+    assert result["error"] == "invented_citation"
+    assert result["request_id"] == response.headers["X-Request-ID"]
+
+
+def test_stream_reports_a_model_failure_in_the_result_line() -> None:
+    response = stream(client_for(Retriever(DOCS), RaisingModel(error=PiTimeout(5.0))))
+    assert response.status_code == 200
+    assert events(response) == [
+        {
+            "type": "result",
+            "response": {
+                "status": "failed",
+                "error": "pi_timeout",
+                "message": rag.FAILURES["pi_timeout"],
+                "request_id": response.headers["X-Request-ID"],
+            },
+        }
+    ]
+    assert SECRET not in response.text
+
+
+def test_stream_rejects_an_invalid_question_with_422() -> None:
+    response = stream(replying(), question="   ")
+    assert response.status_code == 422
+
+
+def abandon(_text: str) -> None:
+    raise rag.Abandoned
+
+
+def test_abandoning_a_question_in_on_draft_stops_the_model_and_raises() -> None:
+    model = TokenModel(responses=[answered("lantern:v1:a", answer=LONG_TEXT)])
+    chain = rag.ChainCache(Retriever(DOCS).make, model, default_mode="hybrid", default_k=8)
+
+    with pytest.raises(rag.Abandoned):
+        rag.ask("q", chain.get(), request_id="r", on_draft=abandon)
+
+    assert len(model.sent) < len(LONG_TEXT) // model.piece  # stopped early
+
+
+def test_any_other_error_from_on_draft_fails_the_question_as_a_bug() -> None:
+    model = TokenModel(responses=[answered("lantern:v1:a", answer=LONG_TEXT)])
+    chain = rag.ChainCache(Retriever(DOCS).make, model, default_mode="hybrid", default_k=8)
+
+    def broken(_text: str) -> None:
+        raise ValueError(SECRET)
+
+    result = rag.ask("q", chain.get(), request_id="r", on_draft=broken)
+
+    assert result.model_dump()["error"] == "internal_error"
+
+
 # --- startup -----------------------------------------------------------------
 
 
@@ -500,3 +619,16 @@ def test_openapi_has_the_status_discriminator_and_the_failed_statuses() -> None:
         failed = responses[http_status]["content"]["application/json"]["schema"]
         assert failed == {"$ref": "#/components/schemas/FailedResponse"}
     assert "422" in responses
+
+
+def test_openapi_documents_the_stream_as_ndjson_events_by_type() -> None:
+    schema = TestClient(create_app()).get("/openapi.json").json()
+    responses = schema["paths"]["/api/ask/stream"]["post"]["responses"]
+    ok = responses["200"]["content"]["application/x-ndjson"]["schema"]
+    assert ok["$ref"] == "#/components/schemas/AskStreamEvent"
+    assert "422" in responses
+    event = schema["components"]["schemas"]["AskStreamEvent"]
+    assert event["discriminator"]["mapping"] == {
+        "draft": "#/components/schemas/DraftEvent",
+        "result": "#/components/schemas/ResultEvent",
+    }

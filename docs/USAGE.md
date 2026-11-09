@@ -113,6 +113,14 @@ The body takes `question` (1 to 1000 characters, not blank), and optionally `mod
 | `unknown` | 200 | `reason`, `model` (null when nothing was retrieved) |
 | `failed` | 500, 502, 503, or 504 | `error`, `message`, `request_id` |
 
+`POST /api/ask/stream` takes the same body and streams the answer while the model writes it, as newline-delimited JSON. The `draft` lines hold unchecked text, and the last line is a `result` with the response that `POST /api/ask` would return. It answers 200 even when the answer fails, so read the `status` in the last line:
+
+```sh
+curl -sN -X POST http://127.0.0.1:8000/api/ask/stream \
+  -H 'content-type: application/json' \
+  -d '{"question": "What is lantern-queue and what is it built on?"}'
+```
+
 `GET /api/sources/{id}` returns the metadata of one approved, visible source, never its text. `GET /api/health` reports the database. The OpenAPI page is at `/docs` on the API's port. "API" in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) lists the error codes.
 
 The API logs one warning line for each failed answer, with the request ID, the exception class, and the error code. `PROFILE_RAG_LOG_LEVEL` in `.env` sets the level (default `INFO`). The log never holds the question, the reply, or Pi's error output.

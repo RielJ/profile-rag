@@ -12,6 +12,16 @@ three variants, chosen by `status`.
     {"status": "unknown", "reason": ..., "model": ...}
     {"status": "failed", "error": FailedCode, "message": ..., "request_id": ...}
 
+`POST /api/ask/stream` takes the same `AskRequest` and returns
+newline-delimited JSON: one `AskStreamEvent` per line. Zero or more `draft`
+events carry the answer text as the model writes it, unchecked; the last
+line is one `result` event with the `AskResponse` that `POST /api/ask` would
+have returned.
+
+    {"type": "draft", "text": "He cut"}
+    {"type": "draft", "text": " build time"}
+    {"type": "result", "response": AskResponse}
+
 `GET /api/sources/{id}` returns a `SourceResponse`: the metadata of one
 approved source, never its text.
 
@@ -128,6 +138,31 @@ class AskResponse(
     ]
 ):
     """An answered, unknown, or failed response, chosen by the `status` field."""
+
+
+class DraftEvent(BaseModel):
+    """The next piece of the answer (or reason) text, sent while the model writes.
+
+    Unchecked: show it as a draft and replace it with the `result` event.
+    """
+
+    model_config = FORBID
+
+    type: Literal["draft"]
+    text: str = Field(description="Text to append to the draft so far.")
+
+
+class ResultEvent(BaseModel):
+    """The checked response. Always the last line of the stream."""
+
+    model_config = FORBID
+
+    type: Literal["result"]
+    response: AskResponse
+
+
+class AskStreamEvent(RootModel[Annotated[DraftEvent | ResultEvent, Field(discriminator="type")]]):
+    """One line of `POST /api/ask/stream`, chosen by the `type` field."""
 
 
 class SourceResponse(BaseModel):

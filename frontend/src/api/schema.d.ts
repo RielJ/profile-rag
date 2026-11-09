@@ -41,6 +41,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ask/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask Stream
+         * @description Answer a question as `POST /api/ask` does, streaming the draft answer first.
+         */
+        post: operations["ask_stream_api_ask_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sources/{source_id}": {
         parameters: {
             query?: never;
@@ -106,6 +126,11 @@ export interface components {
          */
         AskResponse: components["schemas"]["AnsweredResponse"] | components["schemas"]["UnknownResponse"] | components["schemas"]["FailedResponse"];
         /**
+         * AskStreamEvent
+         * @description One line of `POST /api/ask/stream`, chosen by the `type` field.
+         */
+        AskStreamEvent: components["schemas"]["DraftEvent"] | components["schemas"]["ResultEvent"];
+        /**
          * Citation
          * @description One chunk the answer relies on, with its source.
          */
@@ -136,6 +161,24 @@ export interface components {
              * @description The start of the chunk's text after its headings, shortened. Each paragraph and list item is on its own line.
              */
             excerpt: string;
+        };
+        /**
+         * DraftEvent
+         * @description The next piece of the answer (or reason) text, sent while the model writes.
+         *
+         *     Unchecked: show it as a draft and replace it with the `result` event.
+         */
+        DraftEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "draft";
+            /**
+             * Text
+             * @description Text to append to the draft so far.
+             */
+            text: string;
         };
         /**
          * FailedResponse
@@ -177,6 +220,18 @@ export interface components {
              * @enum {string}
              */
             database: "ok" | "unavailable";
+        };
+        /**
+         * ResultEvent
+         * @description The checked response. Always the last line of the stream.
+         */
+        ResultEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "result";
+            response: components["schemas"]["AskResponse"];
         };
         /**
          * SourceResponse
@@ -338,6 +393,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FailedResponse"];
+                };
+            };
+        };
+    };
+    ask_stream_api_ask_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description Newline-delimited JSON: `draft` events, then one `result` event. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": components["schemas"]["AskStreamEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -82,3 +82,28 @@ export function jsonResponse(
     headers: { "Content-Type": "application/json", ...headers },
   });
 }
+
+// A 200 response of POST /api/ask/stream: one JSON line per event (or the
+// raw string as given), sent in pieces of `chunkBytes` bytes, so lines and
+// multi-byte characters can be split across reads.
+export function ndjsonResponse(
+  events: unknown[],
+  { chunkBytes = 5, headers = {} }: { chunkBytes?: number; headers?: Record<string, string> } = {},
+): Response {
+  const text = events
+    .map((event) => (typeof event === "string" ? event : JSON.stringify(event)) + "\n")
+    .join("");
+  const bytes = new TextEncoder().encode(text);
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let start = 0; start < bytes.length; start += chunkBytes) {
+        controller.enqueue(bytes.slice(start, start + chunkBytes));
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "application/x-ndjson", ...headers },
+  });
+}

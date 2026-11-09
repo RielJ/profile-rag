@@ -1,4 +1,4 @@
-// Client for POST /api/ask and GET /api/sources/{id}.
+// Client for POST /api/ask, POST /api/ask/stream, and GET /api/sources/{id}.
 //
 // The types come from schema.d.ts, which `make types` generates from the
 // backend's OpenAPI schema. The response body is still checked at run time:
@@ -14,6 +14,10 @@
 // - `client_error`: the request never produced a usable response: no
 //   network, an aborted request, a body that is not JSON, or JSON of the
 //   wrong shape or with an unexpected status code.
+//
+// `askStream` returns the same union. While the answer is written it also
+// passes each draft piece to `onDraft`. A draft is unchecked text: the
+// returned result replaces it, and can still be `unknown` or `failed`.
 
 import type { components } from "./schema";
 
@@ -28,12 +32,13 @@ export type Attribution = Citation["attribution"];
 export type FailedCode = FailedResponse["error"];
 export type SearchMode = NonNullable<AskRequest["mode"]>;
 export type SourceResponse = Schemas["SourceResponse"];
+export type AskStreamEvent = Schemas["AskStreamEvent"];
 
 // Mirrors backend/src/profile_rag/api/models.py QUESTION_MAX_LENGTH.
 export const QUESTION_MAX_LENGTH = 1000;
 
 export type ClientErrorReason =
-  | "network" // fetch rejected: offline, DNS, refused connection
+  | "network" // fetch rejected (offline, DNS, refused), or a stream was cut off
   | "aborted" // the caller aborted the request
   | "not_json" // the body is not JSON (for example a proxy's HTML error page)
   | "bad_shape" // JSON, but not the shape this status code promises
@@ -134,6 +139,20 @@ function parseAskResponse(value: unknown): AskResponse | null {
   }
 }
 
+function parseStreamEvent(value: unknown): AskStreamEvent | null {
+  if (!isObject(value)) return null;
+  switch (value.type) {
+    case "draft":
+      return typeof value.text === "string" ? { type: "draft", text: value.text } : null;
+    case "result": {
+      const response = parseAskResponse(value.response);
+      return response === null ? null : { type: "result", response };
+    }
+    default:
+      return null;
+  }
+}
+
 // FastAPI's 422 body: {"detail": [{"msg": "...", ...}, ...]}. Only `msg` is
 // kept; `input` can echo the question back and is never shown.
 function parseValidationMessages(value: unknown): string[] | null {
@@ -193,29 +212,34 @@ export interface AskOptions {
   signal?: AbortSignal;
 }
 
-/** POST /api/ask. `question` is sent trimmed. */
-export async function ask(question: string, options: AskOptions = {}): Promise<AskResult> {
+function askInit(question: string, options: AskOptions, accept: string): RequestInit {
   const payload: AskRequest = { question: question.trim() };
   if (options.mode !== undefined) payload.mode = options.mode;
   if (options.k !== undefined) payload.k = options.k;
   const init: RequestInit = {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: { "Content-Type": "application/json", Accept: accept },
     body: JSON.stringify(payload),
   };
   if (options.signal) init.signal = options.signal;
+  return init;
+}
 
-  const received = await request("/api/ask", init);
+function invalidResult(response: Response, body: unknown): AskResult {
+  const messages = parseValidationMessages(body);
+  return messages === null
+    ? clientError("bad_shape", response)
+    : { kind: "invalid", messages, requestId: response.headers.get("X-Request-ID") };
+}
+
+/** POST /api/ask. `question` is sent trimmed. */
+export async function ask(question: string, options: AskOptions = {}): Promise<AskResult> {
+  const received = await request("/api/ask", askInit(question, options, "application/json"));
   if (received.kind !== "json") return received;
   const { response, body } = received;
   const requestId = response.headers.get("X-Request-ID");
 
-  if (response.status === 422) {
-    const messages = parseValidationMessages(body);
-    return messages === null
-      ? clientError("bad_shape", response)
-      : { kind: "invalid", messages, requestId };
-  }
+  if (response.status === 422) return invalidResult(response, body);
   if (response.status !== 200 && (response.status < 500 || response.status > 599)) {
     return clientError("unexpected_status", response);
   }
@@ -226,6 +250,76 @@ export async function ask(question: string, options: AskOptions = {}): Promise<A
     return clientError("bad_shape", response);
   }
   return { kind: "response", response: parsed, httpStatus: response.status, requestId };
+}
+
+export interface AskStreamOptions extends AskOptions {
+  /** Called with each new piece of the draft answer, in order. */
+  onDraft?: (text: string) => void;
+}
+
+/**
+ * POST /api/ask/stream. Resolves to the stream's `result` line, as an
+ * `AskResult` with `httpStatus` 200: the stream reports a failure in that
+ * line, not in its status code.
+ */
+export async function askStream(
+  question: string,
+  options: AskStreamOptions = {},
+): Promise<AskResult> {
+  const init = askInit(question, options, "application/x-ndjson");
+  let response: Response;
+  try {
+    response = await fetch("/api/ask/stream", init);
+  } catch (error: unknown) {
+    return clientError(isAbort(error) ? "aborted" : "network");
+  }
+  if (response.status === 422) {
+    try {
+      return invalidResult(response, await response.json());
+    } catch (error: unknown) {
+      return clientError(isAbort(error) ? "aborted" : "not_json", response);
+    }
+  }
+  if (response.status !== 200) return clientError("unexpected_status", response);
+  if (response.body === null) return clientError("bad_shape", response);
+
+  const requestId = response.headers.get("X-Request-ID");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffered += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = buffered.split("\n");
+      buffered = done ? "" : (lines.pop() ?? "");
+      for (const line of lines) {
+        if (line.trim() === "") continue;
+        let json: unknown;
+        try {
+          json = JSON.parse(line);
+        } catch {
+          return clientError("not_json", response);
+        }
+        const event = parseStreamEvent(json);
+        if (event === null) return clientError("bad_shape", response);
+        if (event.type === "result") {
+          return { kind: "response", response: event.response, httpStatus: 200, requestId };
+        }
+        options.onDraft?.(event.text);
+      }
+      if (done) return clientError("network", response); // ended without a result
+    }
+  } catch (error: unknown) {
+    return clientError(isAbort(error) ? "aborted" : "network", response);
+  } finally {
+    // Stops the download if we returned early; a no-op once the stream ended.
+    reader.cancel().catch(() => {});
+  }
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 /** GET /api/sources/{id}: the metadata of one approved source. */

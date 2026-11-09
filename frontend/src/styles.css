@@ -383,3 +383,23 @@ footer {
     --border: var(--text);
   }
 }
+
+/* A streamed draft: the answer's own type, with a caret while it grows. */
+.draft .answer-text::after {
+  content: "▍";
+  margin-left: 0.1em;
+  color: var(--muted);
+  animation: caret 1s steps(2, start) infinite;
+}
+
+@keyframes caret {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .draft .answer-text::after {
+    animation: none;
+  }
+}

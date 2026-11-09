@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ask, type AskResponse, type AskResult } from "./api/client.ts";
+import { askStream, type AskResponse, type AskResult } from "./api/client.ts";
 import { fetchHealth, type HealthResponse } from "./api/health.ts";
 import { AnswerView } from "./components/AnswerView.tsx";
 import { AskForm } from "./components/AskForm.tsx";
 
 // One question at a time. A union rather than separate `loading` and
 // `result` variables, so "loading with a stale result" cannot happen.
-type AskState = { kind: "idle" } | { kind: "loading" } | { kind: "done"; result: AskResult };
+// `draft` is the answer streamed so far: unchecked text, shown only while
+// loading and replaced by the result, which may not be an answer at all.
+type AskState =
+  | { kind: "idle" }
+  | { kind: "loading"; draft: string }
+  | { kind: "done"; result: AskResult };
 
 export default function App() {
   const [state, setState] = useState<AskState>({ kind: "idle" });
@@ -19,8 +24,16 @@ export default function App() {
     inFlight.current?.abort();
     const controller = new AbortController();
     inFlight.current = controller;
-    setState({ kind: "loading" });
-    const result = await ask(question, { signal: controller.signal });
+    setState({ kind: "loading", draft: "" });
+    const result = await askStream(question, {
+      signal: controller.signal,
+      onDraft: (text) => {
+        if (controller.signal.aborted) return;
+        setState((current) =>
+          current.kind === "loading" ? { kind: "loading", draft: current.draft + text } : current,
+        );
+      },
+    });
     if (controller.signal.aborted) return;
     setState({ kind: "done", result });
     checkHealth(); // the answer may have failed because the server went down
@@ -46,7 +59,11 @@ export default function App() {
         </p>
         <section className="result" aria-label="Result" aria-busy={loading}>
           {state.kind === "loading" ? (
-            <p className="pending">Searching the evidence…</p>
+            state.draft === "" ? (
+              <p className="pending">Searching the evidence…</p>
+            ) : (
+              <DraftView text={state.draft} />
+            )
           ) : state.kind === "done" ? (
             <AnswerView result={state.result} />
           ) : null}
@@ -56,6 +73,18 @@ export default function App() {
         <p className="health">{healthLine(health)}</p>
       </footer>
     </div>
+  );
+}
+
+// The answer while the model writes it. Its citations are checked only when
+// it is complete, so it says so, and it has no links yet.
+function DraftView({ text }: { text: string }) {
+  return (
+    <article className="answer draft" aria-labelledby="draft-heading">
+      <h2 id="draft-heading">Answer</h2>
+      <p className="answer-text">{text}</p>
+      <p className="pending">Writing… Sources are checked when the answer is complete.</p>
+    </article>
   );
 }
 

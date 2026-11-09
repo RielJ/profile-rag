@@ -2,14 +2,15 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App.tsx";
-import { answered, jsonResponse, unknown } from "./test/fixtures.ts";
+import { answered, failed, jsonResponse, ndjsonResponse, unknown } from "./test/fixtures.ts";
 
 const HEALTHY = { status: "ok", database: "ok" };
 
-// A fetch that answers /api/health with `health` and /api/ask with `ask()`.
+// A fetch that answers /api/health with `health` and /api/ask/stream with `askReply()`.
 function mockFetch(
   health: () => Promise<Response>,
-  askReply: () => Promise<Response> = async () => jsonResponse(200, unknown()),
+  askReply: () => Promise<Response> = async () =>
+    ndjsonResponse([{ type: "result", response: unknown() }]),
 ) {
   const fetchMock = vi.fn<typeof fetch>(async (input) =>
     String(input) === "/api/health" ? health() : askReply(),
@@ -79,30 +80,75 @@ describe("App: server status line", () => {
   });
 });
 
+// A stream response whose lines the test sends one at a time with `send`.
+function controlledStream() {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      stream = controller;
+    },
+  });
+  return {
+    response: new Response(body, { status: 200 }),
+    send(event: unknown) {
+      stream.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
+    },
+    close() {
+      stream.close();
+    },
+  };
+}
+
 describe("App: asking", () => {
-  it("shows a pending state while the question is answered, then the answer", async () => {
-    let reply: (response: Response) => void = () => {};
+  it("shows a pending state, then the draft as it streams, then the checked answer", async () => {
+    const reply = controlledStream();
     mockFetch(
       async () => jsonResponse(200, HEALTHY),
-      () =>
-        new Promise<Response>((resolve) => {
-          reply = resolve;
-        }),
+      async () => reply.response,
     );
     const user = userEvent.setup();
     render(<App />);
     await user.type(screen.getByLabelText("Your question"), "What did Dana build?{Enter}");
 
-    expect(screen.getByText("Searching the evidence…")).toBeInTheDocument();
+    expect(await screen.findByText("Searching the evidence…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Asking…" })).toBeDisabled();
     expect(screen.getByRole("region", { name: "Result" })).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("status")).toHaveTextContent("Asking…");
 
-    reply(jsonResponse(200, answered()));
-    expect(await screen.findByRole("heading", { name: "Answer" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Answer ready. It cites 2 excerpts.");
+    reply.send({ type: "draft", text: "Dana built " });
+    reply.send({ type: "draft", text: "a job queue" });
+    expect(await screen.findByText("Dana built a job queue")).toBeInTheDocument();
+    expect(screen.getByText(/^Writing…/)).toBeInTheDocument();
+    expect(screen.queryByText("Searching the evidence…")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Asking…"); // drafts are not announced
+    expect(screen.queryByRole("link")).not.toBeInTheDocument(); // no citations yet
+
+    reply.send({ type: "result", response: answered() });
+    reply.close();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Answer ready. It cites 2 excerpts.",
+    );
+    expect(screen.queryByText(/^Writing…/)).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Result" })).toHaveAttribute("aria-busy", "false");
     expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+  });
+
+  it("drops the draft when the checked result is a failure", async () => {
+    mockFetch(
+      async () => jsonResponse(200, HEALTHY),
+      async () =>
+        ndjsonResponse([
+          { type: "draft", text: "An answer citing a made-up source" },
+          { type: "result", response: failed("invented_citation") },
+        ]),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(screen.getByLabelText("Your question"), "Anything{Enter}");
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "No answer. Safe message for invented_citation.",
+    );
+    expect(screen.queryByText("An answer citing a made-up source")).not.toBeInTheDocument();
   });
 
   it("announces an unknown answer as not in the evidence", async () => {

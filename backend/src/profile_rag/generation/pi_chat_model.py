@@ -9,6 +9,10 @@ reported (`pi_response_model`), and the sections of Pi's system prompt
 `pi_rpc` (`PiError` and its subclasses) pass through unchanged, so callers
 can tell a timeout from a crash.
 
+While Pi writes, each piece of reply text goes to the run's callbacks as
+`on_llm_new_token`, so a caller can show a draft before the reply is
+complete. The returned message is still the whole, final reply.
+
 Pi runs one request per process and has no stop sequences: `stop` is
 rejected rather than ignored.
 
@@ -67,7 +71,8 @@ class PiChatModel(BaseChatModel):
     ) -> ChatResult:
         if stop:
             raise ValueError("PiChatModel does not support stop sequences")
-        reply = run_prompt(join_messages(messages), self.config)
+        on_text = run_manager.on_llm_new_token if run_manager is not None else None
+        reply = run_prompt(join_messages(messages), self.config, on_text)
         message = AIMessage(
             content=reply.text,
             response_metadata={

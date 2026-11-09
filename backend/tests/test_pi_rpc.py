@@ -20,6 +20,7 @@ from fake_pi import (
     assistant_end,
     reply_steps,
     system_start,
+    text_delta,
     write_script,
 )
 
@@ -133,6 +134,36 @@ def test_a_normal_run_returns_the_text_parts_of_the_last_assistant_message(
     assert reply.text == '{"status": "unknown"}'
     assert (reply.model, reply.response_model) == ("test/fake-model", "fake-model-2026")
     assert reply.system_sections == {"preamble", "cwd"}
+
+
+def test_on_text_receives_each_text_delta_in_order_and_nothing_else(tmp_path: Path) -> None:
+    thinking = {"type": "thinking_delta", "delta": "hmm"}
+    steps = [
+        accepted(),
+        system_start(["preamble", "cwd"]),
+        {"emit": {"type": "message_update", "assistantMessageEvent": thinking}},
+        text_delta('{"status": '),
+        text_delta('"unknown"}'),
+        assistant_end('{"status": "unknown"}'),
+        {"emit": {"type": "agent_settled", "aborted": False}},
+    ]
+    script = write_script(tmp_path / "script.json", steps)
+    pieces: list[str] = []
+    reply = run_prompt("p", fake_config(script), on_text=pieces.append)
+    assert pieces == ['{"status": ', '"unknown"}']
+    assert reply.text == '{"status": "unknown"}'
+
+
+def test_an_error_in_on_text_ends_the_call(tmp_path: Path) -> None:
+    script = write_script(tmp_path / "script.json", [accepted(), text_delta("x"), {"sleep": 30}])
+
+    def fail(_delta: str) -> None:
+        raise RuntimeError("client went away")
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="client went away"):
+        run_prompt("p", fake_config(script), on_text=fail)
+    assert time.monotonic() - started < 10
 
 
 def test_events_after_agent_end_are_read_until_agent_settled(tmp_path: Path) -> None:

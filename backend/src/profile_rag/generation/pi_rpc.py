@@ -6,6 +6,12 @@ line. `run_prompt` sends one `prompt` command and reads records until Pi
 reports `agent_settled`. The process never outlives the call: it is killed
 and reaped on success, on error, and on timeout.
 
+Streaming. If `on_text` is given, it is called with each piece of reply text
+as Pi reports it (`message_update` records with a `text_delta` event). The
+pieces are a draft: the return value, taken from the final assistant message,
+is the only reply to trust. `on_text` runs on the calling thread; an
+exception it raises ends the call, and the process is still killed.
+
 Isolation. Pi is a coding agent; here it only turns a prompt into text.
 `ISOLATION_FLAGS` turn off everything else: tools, extensions, skills,
 prompt templates, themes, context files (AGENTS.md, CLAUDE.md), MCP servers,
@@ -37,7 +43,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import IO, NoReturn
 
@@ -182,8 +188,15 @@ def pi_command(config: PiConfig) -> list[str]:
     ]
 
 
-def run_prompt(prompt: str, config: PiConfig) -> PiReply:
-    """Send `prompt` to a fresh Pi process and return its final reply."""
+OnText = Callable[[str], None]
+
+
+def run_prompt(prompt: str, config: PiConfig, on_text: OnText | None = None) -> PiReply:
+    """Send `prompt` to a fresh Pi process and return its final reply.
+
+    `on_text`, if given, receives the reply text piece by piece as it is
+    generated (see the module docstring).
+    """
     command = pi_command(config)
     environment = child_environment(os.environ)
     with tempfile.TemporaryDirectory(prefix="profile-rag-pi-") as workdir:
@@ -205,7 +218,7 @@ def run_prompt(prompt: str, config: PiConfig) -> PiReply:
             ) from error
         session = _Session(process)
         try:
-            return session.converse(prompt, config.timeout)
+            return session.converse(prompt, config.timeout, on_text)
         finally:
             session.stop()
 
@@ -252,7 +265,7 @@ class _Session:
 
     # --- the conversation -------------------------------------------------
 
-    def converse(self, prompt: str, timeout: float) -> PiReply:
+    def converse(self, prompt: str, timeout: float, on_text: OnText | None = None) -> PiReply:
         deadline = time.monotonic() + timeout
         command = {"id": REQUEST_ID, "type": "prompt", "message": prompt}
         self._send(json.dumps(command).encode("utf-8") + b"\n", deadline, timeout)
@@ -278,6 +291,9 @@ class _Session:
                 if message.get("role") == "system":
                     sections = frozenset(_as_dict(message.get("sections")))
                     _check_sections(sections)
+            elif kind == "message_update" and on_text is not None:
+                if delta := _text_delta(record):
+                    on_text(delta)
             elif kind == "message_end":
                 message = _as_dict(record.get("message"))
                 if message.get("role") == "assistant":
@@ -382,6 +398,13 @@ def _check_accepted(response: dict[str, object]) -> None:
         raise PiProtocolError(
             f"Pi did not start a run for the prompt (disposition {disposition!r})"
         )
+
+
+def _text_delta(record: dict[str, object]) -> str:
+    """The reply text of a `message_update` record, or "" if it carries none."""
+    event = _as_dict(record.get("assistantMessageEvent"))
+    delta = event.get("delta")
+    return delta if event.get("type") == "text_delta" and isinstance(delta, str) else ""
 
 
 def _text_field(message: dict[str, object] | None, key: str) -> str:

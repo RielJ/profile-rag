@@ -3,9 +3,11 @@
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fake_pi import FAKE_PI, accepted, reply_steps, write_script
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from profile_rag.generation.pi_chat_model import PiChatModel, join_messages
@@ -54,3 +56,23 @@ def test_stop_sequences_are_rejected(tmp_path: Path) -> None:
     script = write_script(tmp_path / "s.json", reply_steps("x"))
     with pytest.raises(ValueError, match="stop sequences"):
         model_for(script).invoke("hi", stop=["\n"])
+
+
+def test_reply_text_reaches_callbacks_as_tokens_while_pi_writes(tmp_path: Path) -> None:
+    class Tokens(BaseCallbackHandler):
+        def __init__(self) -> None:
+            self.tokens: list[str] = []
+
+        def on_llm_new_token(
+            self, token: str | list[str | dict[str, Any]], **kwargs: object
+        ) -> None:
+            assert isinstance(token, str)
+            self.tokens.append(token)
+
+    tokens = Tokens()
+    model = model_for(write_script(tmp_path / "s.json", reply_steps("the reply")))
+
+    result = model.invoke([HumanMessage("q")], {"callbacks": [tokens]})
+
+    assert tokens.tokens == ["the ", "reply"]
+    assert result.text == "the reply"

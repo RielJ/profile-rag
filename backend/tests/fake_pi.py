@@ -76,13 +76,23 @@ def system_start(sections: list[str]) -> Step:
     return {"emit": {"type": "message_start", "message": message}}
 
 
+def text_delta(delta: str) -> Step:
+    """A `message_update` record that carries one piece of reply text."""
+    event = {"type": "text_delta", "delta": delta}
+    return {"emit": {"type": "message_update", "assistantMessageEvent": event}}
+
+
 def reply_steps(text: str) -> list[Step]:
-    """A normal run: accepted, the events Pi sends, one reply, settled."""
+    """A normal run: accepted, the events Pi sends, one reply, settled.
+
+    The reply streams as two `text_delta` events, its two halves.
+    """
+    half = len(text) // 2
     return [
         accepted(),
         {"emit": {"type": "agent_start"}},
         system_start(["preamble", "cwd"]),
-        {"emit": {"type": "message_update", "assistantMessageEvent": {"type": "text_delta"}}},
+        *(text_delta(piece) for piece in (text[:half], text[half:]) if piece),
         assistant_end(text),
         {"emit": {"type": "agent_end", "willRetry": False}},
         {"emit": {"type": "agent_settled", "aborted": False}},

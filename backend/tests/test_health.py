@@ -1,6 +1,6 @@
 """Tests for GET /api/health and check_database().
 
-Run them with `make test-backend`, or a single test with:
+Run them with `just test-backend`, or a single test with:
 
     uv --directory backend run pytest tests/test_health.py -k unreachable
 """

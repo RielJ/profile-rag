@@ -1,5 +1,5 @@
 """vectorstore/ollama_embeddings.py: the model check that the CLI, the API
-and `make demo` share, and the embeddings it builds.
+and `just demo` share, and the embeddings it builds.
 
 No test calls Ollama: each passes a fake digest lister.
 """

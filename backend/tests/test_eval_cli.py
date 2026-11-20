@@ -159,7 +159,7 @@ def test_a_table_of_another_corpus_is_an_error(fill: Callable[[list[Document]], 
     assert result.exit_code == 2
     assert "chunks_nomic_v15 does not hold this set's corpus (corpus-example/)" in result.output
     assert "1 chunks missing, 0 extra" in result.output
-    assert "make index CORPUS_DIR=corpus-example MODEL=nomic-v15" in result.output
+    assert "just index corpus-example nomic-v15" in result.output
 
 
 # --- Running ---------------------------------------------------------------------------

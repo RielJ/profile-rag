@@ -1,4 +1,4 @@
-// Checks that the generated API types (schema.d.ts, from `make types`) keep
+// Checks that the generated API types (schema.d.ts, from `just types`) keep
 // the backend's discriminated union: `status` alone tells the variants apart.
 // The type checker does most of the work: `describe` would not compile if a
 // variant were missing or `status` did not narrow.

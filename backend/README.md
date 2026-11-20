@@ -1,6 +1,6 @@
 # backend
 
-FastAPI service and `profile-rag` command-line tool. Run commands from the repository root through the `Makefile`; see the root `README.md`.
+FastAPI service and `profile-rag` command-line tool. Run commands from the repository root through the `justfile` (`just`); see the root `README.md`.
 
 Source layout:
 

@@ -1,4 +1,4 @@
-"""The prerequisite checks of `make demo` that need Python.
+"""The prerequisite checks of `just demo` that need Python.
 
 scripts/demo.sh checks the tools first (Docker, uv, Node, pnpm), then runs
 `python -m profile_rag.demo_check`, before it starts the database or changes
@@ -12,13 +12,13 @@ The checks:
   publishes (`DB_PORT`).
 - The ports for the database, the API, and the frontend are free. The
   database port may be taken by this project's own database container
-  (`--db-running`), so a second `make demo` works.
+  (`--db-running`), so a second `just demo` works.
 - Ollama answers at `OLLAMA_URL` and has the embedding model, with the digest
   that vectorstore/models.py expects.
 - Pi (`PROFILE_RAG_PI_BIN`) is on PATH or is an executable file. Whether Pi has
   credentials for the model's provider is only known at the first question.
 - The corpus has `sources.yaml` with at least one approved source, and no
-  approved file has changed since its review. `make index` with no approved
+  approved file has changed since its review. `just index` with no approved
   source empties the table, so the demo stops before that can happen.
 
 Output holds counts, ports, model tags, and paths that the user passed in,
@@ -122,8 +122,8 @@ def check_corpus(root: Path) -> list[str]:
     path = root / REGISTRY_FILENAME
     if not path.is_file():
         return [
-            f"{path} does not exist. CORPUS_DIR must be a corpus root with registered sources:"
-            " see corpus/README.md, or run `make demo` without CORPUS_DIR to use corpus-example/."
+            f"{path} does not exist. The corpus must be a folder with registered sources:"
+            " see corpus/README.md, or run `just demo` with no argument to use corpus-example/."
         ]
     try:
         loaded = registry.load_registry(path)
@@ -134,7 +134,7 @@ def check_corpus(root: Path) -> list[str]:
         return [
             f"{path} has no approved source ({len(loaded.sources)} registered). The demo indexes"
             " approved sources only. Review one with `profile-rag corpus review`"
-            " (corpus/README.md), or run `make demo` without CORPUS_DIR to use corpus-example/."
+            " (corpus/README.md), or run `just demo` with no argument to use corpus-example/."
         ]
     try:
         stale = registry.find_stale(loaded.sources, root)
@@ -167,7 +167,7 @@ def run_checks(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="The prerequisite checks of `make demo`.")
+    parser = argparse.ArgumentParser(description="The prerequisite checks of `just demo`.")
     parser.add_argument("--model", required=True, choices=sorted(MODELS))
     parser.add_argument("--root", required=True, type=Path, help="The corpus root.")
     parser.add_argument("--db-port", required=True, type=int)

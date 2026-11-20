@@ -16,7 +16,7 @@ Rules the runner enforces:
 - Only one runner works at a time. A Postgres advisory lock makes a second
   runner wait instead of applying the same file twice.
 
-Run it with `make migrate`, which calls `python -m profile_rag.db.migrate`.
+Run it with `just migrate`, which calls `python -m profile_rag.db.migrate`.
 """
 
 import hashlib
@@ -115,7 +115,7 @@ def migrate(conninfo: str, directory: Path = MIGRATIONS_DIR) -> list[Migration]:
                         raise MigrationError(
                             f"{migration.path.name} changed after it was applied. "
                             "Applied migrations are immutable: revert the edit and "
-                            "add a new migration instead (or `make db-reset` to "
+                            "add a new migration instead (or `just db-reset` to "
                             "start over while developing)."
                         )
                     continue

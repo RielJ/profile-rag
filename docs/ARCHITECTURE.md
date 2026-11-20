@@ -67,7 +67,7 @@ All paths are under `backend/src/profile_rag/`.
 | `corpus/splitting.py` | Splits documents at headings, then by size in words. Starts each chunk's text with its heading path. Gives each chunk a stable `chunk_id`. |
 | `corpus/sources_table.py` | Keeps the `sources` table equal to the approved registry entries. |
 | `vectorstore/models.py` | The embedding models: Ollama tag, digest, dimensions, table name, and prefixes. |
-| `vectorstore/ollama_embeddings.py` | The Ollama side of a model: `model_problem` says whether Ollama has the tag with the expected digest and how to fix it, and `for_model` builds its prefixed embeddings. The CLI, the API and `make demo` all use it. |
+| `vectorstore/ollama_embeddings.py` | The Ollama side of a model: `model_problem` says whether Ollama has the tag with the expected digest and how to fix it, and `for_model` builds its prefixed embeddings. The CLI, the API and `just demo` all use it. |
 | `vectorstore/prefixed.py` | `PrefixedEmbeddings`: adds the model's document or query prefix and checks every vector. |
 | `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. `connected(url)` and `searching(url, model, embeddings)` are context managers that close the engine when the block ends, also on an error; the CLI commands use them. |
 | `vectorstore/indexing.py` | Runs LangChain `index()` with a record manager per model. |
@@ -98,10 +98,10 @@ All paths are under `backend/src/profile_rag/`.
 | `api/models.py` | The API contract: `AskRequest`, the `AskResponse` union, `Citation`, and `SourceResponse`. |
 | `api/routes.py` | `POST /api/ask`, `POST /api/ask/stream`, `GET /api/sources/{id}`, and the status code of each failure. |
 | `api/search.py` | `open_chains(settings)`: the startup checks and the search store behind `POST /api/ask`. |
-| `api/openapi.py` | Writes the OpenAPI schema to a file without starting a server, for `make types`. |
+| `api/openapi.py` | Writes the OpenAPI schema to a file without starting a server, for `just types`. |
 | `api/log_config.py` | `configure_logging()`: sends the `profile_rag` loggers to stderr at `PROFILE_RAG_LOG_LEVEL` (default `INFO`). `create_app()` calls it. |
 | `api/` (other) | The FastAPI application and its lifespan (`app.py`), dependencies (`deps.py`), and `GET /api/health` (`health.py`). |
-| `demo_check.py` | The prerequisite checks of `make demo` (`scripts/demo.sh`) that need Python: ports, Ollama and the model digest, Pi on `PATH`, and at least one approved, unchanged source. |
+| `demo_check.py` | The prerequisite checks of `just demo` (`scripts/demo.sh`) that need Python: ports, Ollama and the model digest, Pi on `PATH`, and at least one approved, unchanged source. |
 | `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, `ask`, `agent`, `compare-agent`, `eval`, and `hnsw`. |
 
 ## Tables
@@ -172,14 +172,14 @@ Visibility is `public` or `sanitized`. A sanitized source is a reviewed copy of 
 
 ## Index and search
 
-To index the corpus, start Postgres, apply the migrations, and run `make index`:
+To index the corpus, start Postgres, apply the migrations, and run `just index`:
 
 ```sh
-make db-up
-make migrate
-make index                                  # corpus/ with nomic-v15
-make index CORPUS_DIR=corpus-example        # the fictional example corpus
-make index MODEL=qwen3-06b                  # the second model's table
+just db-up
+just migrate
+just index                                  # corpus/ with nomic-v15
+just index corpus-example                   # the fictional example corpus
+just index corpus qwen3-06b                 # the second model's table
 ```
 
 `profile-rag index` checks that Ollama has the model with the digest in `vectorstore/models.py`, writes the approved entries to `sources`, and indexes every chunk. A second run with nothing changed reports every chunk as skipped. A source that lost approval loses its rows.
@@ -231,7 +231,7 @@ uv --directory backend run profile-rag hnsw compare --model nomic-v15 --set exam
 - `apply` creates `<table>_hnsw` with `USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')`. `vector_cosine_ops` is the operator class of `<=>`, the cosine distance the store searches with. It prints `created`, `unchanged` (a valid index with the same `m` and `ef_construction` exists), or `rebuilt` (the index was invalid or had other settings). `ef_construction` must be at least 2 × `m`.
 - `drop` removes the index and prints `dropped`, or `absent` if there was none. Search then runs by sequential scan again.
 - `status` prints the index settings, size, and validity from `pg_indexes` and `pg_index`.
-- The index is not part of `index`. Postgres maintains it on every insert, update, and delete, so it needs no rebuild after `make index`.
+- The index is not part of `index`. Postgres maintains it on every insert, update, and delete, so it needs no rebuild after `just index`.
 
 `--ef-search N` (1 to 1000) opens the store with `HNSWQueryOptions(ef_search=N)`. The store then runs `SET LOCAL hnsw.ef_search = N` in the transaction of each dense query, so the setting reaches no other query. Without the option, the server setting holds (pgvector's default is 40). A higher value keeps more candidates during the graph search: it finds more of the true nearest chunks and reads more rows. pgvector's HNSW scan returns at most `ef_search` rows (pgvector 0.8.7; `hnsw.iterative_scan` is off by default), so a value below the rows the dense query asks for (`k` in dense mode, 20 or `k` in MMR and hybrid) returns too few chunks. `search` and `eval` print a warning in that case.
 
@@ -421,7 +421,7 @@ A failed answer returns a 5xx status with the `failed` variant as its body. The 
 
 ### Frontend types
 
-`make types` writes the OpenAPI schema to a temporary file with `python -m profile_rag.api.openapi` (no server runs) and turns it into `frontend/src/api/schema.d.ts` with openapi-typescript 7.13.0. `AskResponse` becomes a TypeScript union of the three variants, each with a literal `status`, so a `switch` on `status` narrows it (`frontend/src/api/schema.test.ts`). `make types-check` runs openapi-typescript with `--check` and fails when the file is out of date; `make lint` runs it first. The file is generated, so oxfmt and oxlint skip it.
+`just types` writes the OpenAPI schema to a temporary file with `python -m profile_rag.api.openapi` (no server runs) and turns it into `frontend/src/api/schema.d.ts` with openapi-typescript 7.13.0. `AskResponse` becomes a TypeScript union of the three variants, each with a literal `status`, so a `switch` on `status` narrows it (`frontend/src/api/schema.test.ts`). `just types-check` runs openapi-typescript with `--check` and fails when the file is out of date; `just lint` runs it first. The file is generated, so oxfmt and oxlint skip it.
 
 openapi-typescript 7 builds its output with the TypeScript compiler API, and its peer range is `typescript ^5.x`. TypeScript 7, which the frontend uses, has no JavaScript API: with it, openapi-typescript fails at startup (`ts.factory` is undefined). `frontend/.pnpmfile.cjs` removes the peer dependency and gives openapi-typescript its own TypeScript 5.9.3. The frontend's `tsc` stays on 7 and type-checks the generated file.
 
@@ -450,7 +450,7 @@ The UI is one page (`frontend/src/App.tsx`): a question form, the result, and a 
 
 ### States and rendering rules
 
-`AnswerView` switches on the result kind and then on `status`. Each switch ends in `const unreachable: never = ...`, so a new variant in `schema.d.ts` fails `make typecheck` until the UI renders it. The attribution and client-error label maps use `satisfies Record<...>` for the same reason.
+`AnswerView` switches on the result kind and then on `status`. Each switch ends in `const unreachable: never = ...`, so a new variant in `schema.d.ts` fails `just typecheck` until the UI renders it. The attribution and client-error label maps use `satisfies Record<...>` for the same reason.
 
 - **Answered**: the answer text, then one marker per citation, `[1]` to `[n]` in citation order. Each marker is a link to `#evidence-<chunk_id>`, which works without JavaScript; a click also moves focus to that evidence item (`tabIndex=-1`), so keyboard and screen-reader position follow. The model name from the response is shown in a small line under the answer.
 - **Unknown**: headed "Not in the evidence", in a neutral box, with the reason. It is a normal outcome, not an error, so it uses no error color.
@@ -465,9 +465,9 @@ The styles (`styles.css`) follow the system light or dark setting, keep a visibl
 
 ### Tests
 
-The unit tests (`make test-frontend`, Vitest in jsdom) stub `fetch`. `client.test.ts` covers each result kind and the shape checks; `AskForm.test.tsx`, `AnswerView.test.tsx`, and `App.test.tsx` cover each state, the loading state, the length limit, the markers, and the text-only rendering.
+The unit tests (`just test-frontend`, Vitest in jsdom) stub `fetch`. `client.test.ts` covers each result kind and the shape checks; `AskForm.test.tsx`, `AnswerView.test.tsx`, and `App.test.tsx` cover each state, the loading state, the length limit, the markers, and the text-only rendering.
 
-The browser tests (`make e2e`, Playwright and Chromium; `make e2e-install` once) cover an answered question (a marker click focuses and shows its evidence item), an unknown question, a failed answer, and a 375-pixel layout without sideways scrolling, each at desktop size and at phone size.
+The browser tests (`just e2e`, Playwright and Chromium; `just e2e-install` once) cover an answered question (a marker click focuses and shows its evidence item), an unknown question, a failed answer, and a 375-pixel layout without sideways scrolling, each at desktop size and at phone size.
 
 ### Test-mode server
 
@@ -518,7 +518,7 @@ corpus ──► load approved sources ──► split as `index` does
                                         │
 labels ──► resolve span -> chunk IDs (labels.py) ──► any label error: stop, exit 2
                                         │
-chunks_<model> must hold exactly this split, or stop with the `make index` command to run
+chunks_<model> must hold exactly this split, or stop with the `just index` command to run
                                         │
 build_retriever(mode, store, k, ...) ──► invoke(question) per question ──► metadata["chunk_id"]
                                         │

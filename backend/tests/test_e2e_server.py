@@ -1,6 +1,6 @@
 """The e2e test server's safeguards and its fake Pi's replies.
 
-The server itself runs in `make e2e` (frontend/tests/e2e/). These tests
+The server itself runs in `just e2e` (frontend/tests/e2e/). These tests
 check, without starting it, that it refuses to run outside test mode or
 against a database that is not a throwaway one, and that the fake Pi picks
 the reply the browser tests expect.

@@ -64,14 +64,14 @@ def tracing_stays_off() -> Iterator[None]:
 UNREACHABLE_DSN = "postgresql://nobody:nothing@127.0.0.1:9/none"
 
 # Prefix of throwaway databases. If a test run is killed before cleanup, find
-# leftovers with `\l profile_rag_tmp_*` in `make psql-test` and drop them.
+# leftovers with `\l profile_rag_tmp_*` in `just psql-test` and drop them.
 TEMPORARY_DATABASE_PREFIX = "profile_rag_tmp_"
 
 
 def _test_database_url() -> str:
     url = get_settings().test_database_url
     if url is None:
-        pytest.fail("TEST_DATABASE_URL is not set. Run `make setup` to create .env.")
+        pytest.fail("TEST_DATABASE_URL is not set. Run `just setup` to create .env.")
     return str(url)
 
 
@@ -194,7 +194,7 @@ def test_pool() -> Iterator[Pool]:
         pool.wait(timeout=5)
     except PoolTimeout:
         pool.close()
-        pytest.fail("Cannot reach the test database. Run `make db-up` first.")
+        pytest.fail("Cannot reach the test database. Run `just db-up` first.")
     yield pool
     pool.close()
 

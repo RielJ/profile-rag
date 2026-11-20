@@ -4,7 +4,7 @@
 # - The port is bound to 127.0.0.1 only, so other machines on your
 #   network cannot connect.
 # - Data lives in the named volume `pgdata` and survives `docker compose down`.
-#   `make db-reset` deletes it.
+#   `just db-reset` deletes it.
 # - Files in db/init/ run once, when the volume is first created.
 
 name: profile-rag-app

@@ -2,7 +2,7 @@
 
     uv run python -m profile_rag.api.openapi PATH
 
-`make types` runs this and turns the file into frontend/src/api/schema.d.ts
+`just types` runs this and turns the file into frontend/src/api/schema.d.ts
 with openapi-typescript. The schema comes from the route and model
 definitions only: building it opens no database, Ollama, or Pi.
 """

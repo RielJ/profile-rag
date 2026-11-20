@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// End-to-end tests: `make e2e`. One-time setup: `make e2e-install`.
+// End-to-end tests: `just e2e`. One-time setup: `just e2e-install`.
 //
 // Playwright starts two servers and stops them after the run:
 //

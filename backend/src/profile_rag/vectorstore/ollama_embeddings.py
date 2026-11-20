@@ -2,7 +2,7 @@
 
 Three callers check the model before they use it: the CLI (`index`,
 `search`, `ask`, `agent`, `eval`, ...), the API at startup
-(api/search.py), and `make demo` (demo_check.py). Each turns the problem
+(api/search.py), and `just demo` (demo_check.py). Each turns the problem
 into its own output: an exit code, a `SearchSetupError`, or a line in the
 list of problems. This module is the one place that knows how to ask Ollama
 and what the fix for each problem is.

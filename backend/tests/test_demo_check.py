@@ -1,4 +1,4 @@
-"""Tests for `make demo`'s prerequisite checks (profile_rag/demo_check.py).
+"""Tests for `just demo`'s prerequisite checks (profile_rag/demo_check.py).
 
 Ports, Ollama, and Pi are faked, so the tests need no running service.
 """

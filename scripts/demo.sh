@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# `make demo`: check the prerequisites, start Postgres, apply the migrations,
+# `just demo`: check the prerequisites, start Postgres, apply the migrations,
 # index a corpus, then run the API and the frontend until Ctrl-C.
 #
-# The Makefile sets these variables (from the environment, then .env, then
-# a default): CORPUS_DIR, MODEL, DB_PORT, API_PORT, FRONTEND_PORT, NODE_EXEC.
+# The justfile sets these variables (the ports come from the environment,
+# then .env, then a default): CORPUS_DIR, MODEL, DB_PORT, API_PORT, FRONTEND_PORT, NODE_EXEC.
 #
 # Every step is safe to repeat: `docker compose up` leaves a running
 # database alone, the migration runner skips applied files, and `index`
@@ -19,7 +19,7 @@ NODE_EXEC=${NODE_EXEC:-}
 NODE_VERSION=$(cat .node-version)
 UV=(uv --directory backend)
 CORPUS_ROOT=$(cd "$CORPUS_DIR" 2>/dev/null && pwd) || {
-	echo "make demo: CORPUS_DIR=$CORPUS_DIR is not a directory." >&2
+	echo "just demo: corpus $CORPUS_DIR is not a directory." >&2
 	exit 1
 }
 
@@ -60,7 +60,7 @@ else
 fi
 if ((${#problems[@]})); then
 	printf '  - %s\n' "${problems[@]}" >&2
-	echo "make demo cannot start. Fix the items above, then run it again." >&2
+	echo "just demo cannot start. Fix the items above, then run it again." >&2
 	exit 1
 fi
 
@@ -98,7 +98,7 @@ if [[ -n $owner_problem ]]; then
 	checks_ok=0
 fi
 if ((!checks_ok)); then
-	echo "make demo cannot start. Fix the items above, then run it again." >&2
+	echo "just demo cannot start. Fix the items above, then run it again." >&2
 	exit 1
 fi
 
@@ -157,7 +157,7 @@ cleanup() {
 	stop_server "$web_pid"
 	stop_server "$api_pid"
 	wait 2>/dev/null || true
-	echo "Stopped. The database keeps running; \`make db-down\` stops it."
+	echo "Stopped. The database keeps running; \`just db-down\` stops it."
 }
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
@@ -187,13 +187,13 @@ wait_for() {
 	local url=$1 pid=$2 name=$3
 	for _ in {1..120}; do
 		if ! kill -0 "$pid" 2>/dev/null; then
-			echo "make demo: $name exited during startup. Its error is above." >&2
+			echo "just demo: $name exited during startup. Its error is above." >&2
 			return 1
 		fi
 		curl --silent --fail --output /dev/null "$url" && return 0
 		sleep 0.5
 	done
-	echo "make demo: $name did not answer $url within 60 seconds." >&2
+	echo "just demo: $name did not answer $url within 60 seconds." >&2
 	return 1
 }
 
@@ -214,5 +214,5 @@ EOF
 while kill -0 "$api_pid" 2>/dev/null && kill -0 "$web_pid" 2>/dev/null; do
 	sleep 1
 done
-echo "make demo: a server exited. Its error is above." >&2
+echo "just demo: a server exited. Its error is above." >&2
 exit 1

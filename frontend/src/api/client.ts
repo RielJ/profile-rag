@@ -1,6 +1,6 @@
 // Client for POST /api/ask, POST /api/ask/stream, and GET /api/sources/{id}.
 //
-// The types come from schema.d.ts, which `make types` generates from the
+// The types come from schema.d.ts, which `just types` generates from the
 // backend's OpenAPI schema. The response body is still checked at run time:
 // the types describe what the backend promises, not what a proxy, an old
 // server, or a broken deploy actually sends. Nothing here uses `as`.

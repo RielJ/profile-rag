@@ -4,7 +4,7 @@
 interface __BaseEnv_Env {
 	ANSWERS: KVNamespace;
 	AI: Ai;
-	CACHE_VERSION: "1";
+	CACHE_VERSION: "2";
 	CORPUS_VERSION: "dev";
 	QUESTIONS_PER_VISITOR_PER_HOUR: "5";
 	QUESTIONS_PER_DAY: "60";

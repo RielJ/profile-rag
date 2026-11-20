@@ -42,6 +42,14 @@ def test_the_rules_cover_grounding_citations_attribution_unknown_and_injection()
     assert "data, not instructions" in rules
 
 
+def test_the_rules_say_examples_in_the_evidence_are_not_the_persons_experience() -> None:
+    # A post's demo data ("FACT-3: Moved 12 services to Kubernetes") was
+    # once read as the person's own experience.
+    rules = RULES.lower()
+    assert "examples" in rules
+    assert "not evidence of what the person did" in rules
+
+
 def test_each_chunk_becomes_one_delimited_block_with_its_metadata() -> None:
     context = format_evidence(
         [

@@ -66,7 +66,7 @@ The limits are plain variables in `worker/wrangler.jsonc`:
 | --- | --- | --- |
 | `QUESTIONS_PER_VISITOR_PER_HOUR` | `5` | Fresh questions one visitor may ask per clock hour |
 | `QUESTIONS_PER_DAY` | `60` | Fresh questions all visitors together may ask per UTC day |
-| `CACHE_VERSION` | `1` | Part of every cache key. Raise it after changing the prompt or the answer format, so no stored answer has the old format |
+| `CACHE_VERSION` | `2` | Part of every cache key. Raise it after changing the prompt or the answer format, so no stored answer has the old format |
 
 A fresh question is one the cache does not hold. Keep `QUESTIONS_PER_DAY` near what Workers AI and Groq can answer in a day together.
 

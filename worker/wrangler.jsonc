@@ -26,7 +26,7 @@
   },
   "vars": {
     // Bumped when the prompt or the answer format changes; part of every cache key.
-    "CACHE_VERSION": "1",
+    "CACHE_VERSION": "2",
     // A hash of the indexed chunks; `just worker-deploy` sets it. Part of every cache key.
     "CORPUS_VERSION": "dev",
     // Fresh (uncached) questions; cache hits are never counted.

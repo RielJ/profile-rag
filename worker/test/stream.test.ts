@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { failed, type AskResponse } from "../src/contract";
+import { modelFailure } from "../src/failure";
 import { forwardWithResult, resultEvent } from "../src/stream";
 import workersAiStream from "./fixtures/workers-ai-gpt-oss.sse.txt";
+import { readResultEvent as resultOf } from "./support/events";
 import { streamOf } from "./support/streams";
 
 const UNKNOWN: AskResponse = { status: "unknown", reason: "not covered", model: "m" };
@@ -20,9 +22,10 @@ async function forward(
   const pending: Promise<unknown>[] = [];
   const seen: string[] = [];
   const errors: unknown[] = [];
+  const signal = options.signal ?? new AbortController().signal;
   const out = forwardWithResult({
     body,
-    signal: options.signal ?? new AbortController().signal,
+    signal,
     finish:
       options.finish ??
       ((events) => {
@@ -31,7 +34,7 @@ async function forward(
       }),
     fail: (error) => {
       errors.push(error);
-      return failed(options.signal?.aborted ? "pi_timeout" : "pi_failed", "req1");
+      return failed(modelFailure(signal), "req1");
     },
     waitUntil: (promise) => pending.push(promise),
     ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
@@ -67,11 +70,16 @@ function ignoresDeadline(
   });
 }
 
-/** The data of the stream's `result` event. */
-const resultOf = (text: string): unknown => {
-  const match = /\n\nevent: result\ndata: (.*)\n\n$/.exec(text);
-  return match ? JSON.parse(match[1] ?? "") : undefined;
-};
+describe("resultEvent", () => {
+  it.each([
+    ["an unknown", UNKNOWN],
+    ["a failure", failed("pi_failed", "req1")],
+    ["a cached answer", { ...UNKNOWN, cached: true as const }],
+  ])("writes %s that readResultEvent reads back", (_, response) => {
+    expect(resultOf(`data: {}\n\n${resultEvent(response)}`)).toEqual(response);
+    expect(resultOf(resultEvent(response))).toEqual(response);
+  });
+});
 
 describe("forwardWithResult", () => {
   it("forwards the model's events untouched, then appends the result", async () => {

@@ -112,6 +112,15 @@ export function withFallback(
 }
 
 /**
+ * True if a server-sent event stream holds model output (`choices`). Only such
+ * a stream can repeat the visitor's question, so only such a stream is never
+ * logged (src/ask.ts).
+ */
+export function hasModelOutput(events: string): boolean {
+  return events.includes('"choices"');
+}
+
+/**
  * The model's reply in a server-sent event stream: every `delta.content`,
  * in order. Reasoning (`delta.reasoning`, `delta.reasoning_content`) is not
  * part of it.

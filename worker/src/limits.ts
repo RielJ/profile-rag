@@ -109,7 +109,11 @@ export async function visitorId(address: string): Promise<string> {
   ).join("");
 }
 
-/** The limits from the Worker's variables. A missing or bad value is a deploy error. */
+/**
+ * The limits from the Worker's variables. A missing or bad value fails every
+ * fresh question with 500 `internal_error` (askStream logs the cause);
+ * cached answers are still served.
+ */
 export function limitsFrom(env: {
   QUESTIONS_PER_VISITOR_PER_HOUR: string;
   QUESTIONS_PER_DAY: string;

@@ -30,6 +30,8 @@ import {
   type Attribution,
   type UnknownResponse,
 } from "./contract";
+import { mayCache } from "./failure";
+import { WORKERS_AI_MODEL } from "./model";
 
 export type CachedResponse = AnsweredResponse | UnknownResponse;
 
@@ -64,6 +66,21 @@ const hex = (buffer: ArrayBuffer): string =>
   Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 /** The KV key for `question`: `answer:` and a SHA-256 of the parts and the normalized question. */
+/**
+ * The key of `question`'s entry for this deploy. The model part is the
+ * configured model, also when Groq runs the same weights.
+ */
+export function questionCacheKey(
+  question: string,
+  env: { CACHE_VERSION: string; CORPUS_VERSION: string },
+): Promise<string> {
+  return cacheKey(question, {
+    cacheVersion: env.CACHE_VERSION,
+    corpusVersion: env.CORPUS_VERSION,
+    model: WORKERS_AI_MODEL,
+  });
+}
+
 export async function cacheKey(question: string, parts: CacheKeyParts): Promise<string> {
   const material = [
     parts.cacheVersion,
@@ -148,7 +165,7 @@ export async function writeCached(
   key: string,
   response: AskResponse,
 ): Promise<void> {
-  if (response.status === "failed") return;
+  if (!mayCache(response)) return;
   try {
     await kv.put(key, JSON.stringify(response), { expirationTtl: CACHE_TTL_SECONDS });
   } catch (error) {

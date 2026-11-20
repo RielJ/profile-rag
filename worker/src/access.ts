@@ -5,12 +5,11 @@
  * `X-Access-Key`, so visitors reach the API through the proxy only.
  * `GET /api/health` stays open for uptime checks.
  *
- * Unlike the Python API, which skips the check when no key is set, the Worker
- * fails closed: with no `ACCESS_KEY` secret, every question is refused.
+ * The check fails closed: with no `ACCESS_KEY` secret, every question is
+ * refused. The visitor's address header is read in src/limits.ts.
  */
 
 export const ACCESS_KEY_HEADER = "X-Access-Key";
-export const VISITOR_IP_HEADER = "X-Visitor-IP";
 
 const encoder = new TextEncoder();
 
@@ -27,10 +26,4 @@ export async function hasAccessKey(
     crypto.subtle.digest("SHA-256", encoder.encode(expected)),
   ]);
   return crypto.subtle.timingSafeEqual(a, b);
-}
-
-/** The visitor's address as the proxy reports it, at most 100 characters, or null. */
-export function visitorOf(request: Request): string | null {
-  const visitor = request.headers.get(VISITOR_IP_HEADER)?.trim();
-  return visitor ? visitor.slice(0, 100) : null;
 }

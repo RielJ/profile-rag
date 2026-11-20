@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   GROQ_MODEL,
   GROQ_URL,
+  hasModelOutput,
   MAX_TOKENS,
   ModelFailed,
   replyOf,
@@ -32,6 +33,17 @@ describe("MAX_TOKENS", () => {
   it("leaves room for the longest measured answer but caps runaway streams", () => {
     expect(MAX_TOKENS).toBeGreaterThanOrEqual(2.5 * 268);
     expect(MAX_TOKENS).toBeLessThanOrEqual(1000);
+  });
+});
+
+describe("hasModelOutput", () => {
+  it("is true for a stream with choices", () => {
+    expect(hasModelOutput(workersAiStream)).toBe(true);
+  });
+
+  it("is false for a stream that only holds an error", () => {
+    const error = 'data: {"errors":[{"message":"daily free allocation used up","code":4006}]}\n\n';
+    expect(hasModelOutput(error)).toBe(false);
   });
 });
 

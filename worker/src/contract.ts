@@ -1,13 +1,15 @@
 /**
  * The response types of the API and the text shared with the Python backend.
  *
- * The wire shapes match backend/src/profile_rag/api/models.py, so the
- * portfolio reads the Worker exactly as it read the Python API.
+ * The Worker owns the wire shapes. The Python CLI's responses
+ * (backend/src/profile_rag/answers.py) have the same shapes, so
+ * `just worker-parity` can compare the two.
  *
  * `generated/backend-contract.json` holds the system prompt, the failure
- * messages, and two constants, exported from the Python code so the two
- * cannot drift apart. Do not edit it; regenerate it with
- * `just worker-contract`.
+ * messages, and the search constants, exported from the Python code so the
+ * two cannot drift apart. Do not edit it; regenerate it with
+ * `just worker-contract`. test/contract.test.ts checks that its failure codes
+ * and attributions match the lists below.
  */
 
 import contract from "./generated/backend-contract.json";

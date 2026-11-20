@@ -13,9 +13,9 @@ import { neon } from "@neondatabase/serverless";
 
 import { hasAccessKey } from "./access";
 import { askStream, readQuestion } from "./ask";
-import { cacheKey, readCached, writeCached } from "./cache";
+import { questionCacheKey, readCached, writeCached } from "./cache";
 import { limitsFrom, visitorAddress, visitorId } from "./limits";
-import { groq, withFallback, WORKERS_AI_MODEL, workersAi } from "./model";
+import { groq, withFallback, workersAi } from "./model";
 import { retrieve, workersAiEmbed, type Query } from "./retrieve";
 
 export { QuestionLimiter } from "./limits";
@@ -51,12 +51,7 @@ export default {
       // One HTTP round trip per query; neon() throws without a URL, inside retrieve's error handling.
       const query: Query = (text, params) => neon(env.DATABASE_URL).query(text, params);
       const embed = workersAiEmbed(env.AI);
-      const key = await cacheKey(read.question, {
-        cacheVersion: env.CACHE_VERSION,
-        corpusVersion: env.CORPUS_VERSION,
-        // The configured model, also when Groq runs the same weights.
-        model: WORKERS_AI_MODEL,
-      });
+      const key = await questionCacheKey(read.question, env);
       return askStream(read.question, {
         requestId,
         cache: {

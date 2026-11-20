@@ -10,9 +10,11 @@ import {
 } from "../src/ask";
 import type { Chunk } from "../src/chunk";
 import { failed, type AskResponse } from "../src/contract";
+import { mayCache } from "../src/failure";
 import { ModelFailed, type StartModel } from "../src/model";
 import type { Message } from "../src/prompt";
 import { resultEvent } from "../src/stream";
+import { readResultEvent as resultIn } from "./support/events";
 import { streamOf } from "./support/streams";
 
 const chunk = (chunkId: string): Chunk => ({
@@ -52,9 +54,6 @@ async function ask(question: string, deps: Partial<AskDeps> = {}) {
   await Promise.all(pending);
   return { response, text, logs };
 }
-
-const resultIn = (text: string): unknown =>
-  JSON.parse(/event: result\ndata: (.*)\n\n$/.exec(text)?.[1] ?? "null");
 
 describe("readQuestion", () => {
   it("accepts a question", () => {
@@ -157,7 +156,7 @@ describe("askStream", () => {
   it("answers 504 pi_timeout when the model times out before streaming", async () => {
     const controller = new AbortController();
     const { response, text } = await ask("q", {
-      signal: controller.signal,
+      answerDeadline: () => controller.signal,
       startModel: async () => {
         controller.abort();
         throw new Error("aborted");
@@ -183,6 +182,62 @@ describe("askStream", () => {
     expect(answer?.["events_head"]).toContain("4006");
   });
 
+  it("ends a stream with internal_error, not a model failure, when building the result has a bug", async () => {
+    // A chunk with no heading path makes toCitation throw a TypeError: a bug, not a bad reply.
+    const broken: Chunk = { ...chunk("resume:1"), headingPath: undefined as never };
+    const reply = '{"status":"answered","answer":"Yes.","citations":["resume:1"]}';
+    const writes: AskResponse[] = [];
+    const { response, text, logs } = await ask("q", {
+      retrieve: async () => [broken],
+      startModel: replying(reply),
+      cache: { read: async () => null, write: async (r) => void writes.push(r) },
+    });
+    expect(response.status).toBe(200);
+    expect(resultIn(text)).toEqual(failed("internal_error", "req1"));
+    expect(logs).toContainEqual(
+      expect.objectContaining({ event: "ask_failed", error: "internal_error" }),
+    );
+    expect(logs.find((line) => line["event"] === "ask_failed")?.["cause"]).toContain("TypeError");
+    expect(writes).toEqual([]);
+  });
+
+  it("starts the deadline after search, just before the model call", async () => {
+    const calls: string[] = [];
+    const deadline = new AbortController().signal;
+    let given: AbortSignal | undefined;
+    await ask("q", {
+      retrieve: async () => {
+        calls.push("retrieve");
+        return CHUNKS;
+      },
+      answerDeadline: () => {
+        calls.push("deadline");
+        return deadline;
+      },
+      startModel: async (messages, signal) => {
+        calls.push("model");
+        given = signal;
+        return replying('{"status":"unknown","reason":"x"}')(messages, signal);
+      },
+    });
+    expect(calls).toEqual(["retrieve", "deadline", "model"]);
+    expect(given).toBe(deadline);
+  });
+
+  it("never starts the deadline when search fails", async () => {
+    const calls: string[] = [];
+    await ask("q", {
+      retrieve: async () => {
+        throw new Error("Neon is suspended");
+      },
+      answerDeadline: () => {
+        calls.push("deadline");
+        return new AbortController().signal;
+      },
+    });
+    expect(calls).toEqual([]);
+  });
+
   it("never logs a model stream that has choices, which can echo the question", async () => {
     const { logs } = await ask("q", { startModel: replying("Sure! He is great.") });
     const answer = logs.find((line) => line["event"] === "answer");
@@ -198,7 +253,7 @@ describe("askStream with the cache and the limits", () => {
   const memoryCache = (stored: AskResponse | null = null) => {
     const writes: AskResponse[] = [];
     const cache: QuestionCache = {
-      read: async () => (stored?.status === "failed" ? null : stored),
+      read: async () => (stored && mayCache(stored) ? stored : null),
       write: async (response) => {
         writes.push(response);
       },
@@ -225,6 +280,17 @@ describe("askStream with the cache and the limits", () => {
     expect(text).toBe(resultEvent({ ...UNKNOWN, cached: true }));
     expect(calls).toEqual([]);
     expect(writes).toEqual([]);
+  });
+
+  it("never starts the deadline for a cache hit or a question over a limit", async () => {
+    const calls: string[] = [];
+    const answerDeadline = () => {
+      calls.push("deadline");
+      return new AbortController().signal;
+    };
+    await ask("q", { cache: memoryCache(UNKNOWN).cache, answerDeadline });
+    await ask("q", { takeQuestion: async () => ({ ok: false, limit: "day" }), answerDeadline });
+    expect(calls).toEqual([]);
   });
 
   it("stores the result of a fresh answer", async () => {

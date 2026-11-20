@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { cacheKey } from "../src/cache";
+import { cacheKey, questionCacheKey } from "../src/cache";
 import { WORKERS_AI_MODEL } from "../src/model";
 import { resultEvent } from "../src/stream";
 
@@ -42,6 +42,22 @@ describe("POST /api/ask/stream access", () => {
     expect(response.status).not.toBe(401);
   });
 
+  it.each([[{ question: "   " }], [{}], ["not an object"]])(
+    "answers 422 for the body %j",
+    async (body) => {
+      const response = await exports.default.fetch(
+        new Request(`${BASE}/api/ask/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Access-Key": "test-key" },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(await response.json()).toEqual({ detail: expect.any(String) });
+      expect(response.headers.get("X-Request-ID")).toMatch(/^[0-9a-f]{32}$/);
+    },
+  );
+
   it("rejects GET", async () => {
     const response = await exports.default.fetch(`${BASE}/api/ask/stream`);
     expect(response.status).toBe(405);
@@ -51,6 +67,16 @@ describe("POST /api/ask/stream access", () => {
 it("answers 404 for an unknown path", async () => {
   const response = await exports.default.fetch(`${BASE}/nope`);
   expect(response.status).toBe(404);
+});
+
+it("keys a question by the deploy's cache version, corpus version and configured model", async () => {
+  expect(await questionCacheKey("q", env)).toBe(
+    await cacheKey("q", {
+      cacheVersion: env.CACHE_VERSION,
+      corpusVersion: env.CORPUS_VERSION,
+      model: WORKERS_AI_MODEL,
+    }),
+  );
 });
 
 describe("POST /api/ask/stream cache and limits", () => {
@@ -69,11 +95,7 @@ describe("POST /api/ask/stream cache and limits", () => {
 
   it("serves a stored answer for the same question, however it is written", async () => {
     const stored = { status: "unknown", reason: "not covered", model: WORKERS_AI_MODEL } as const;
-    const key = await cacheKey("Is he open to remote work?", {
-      cacheVersion: env.CACHE_VERSION,
-      corpusVersion: env.CORPUS_VERSION,
-      model: WORKERS_AI_MODEL,
-    });
+    const key = await questionCacheKey("Is he open to remote work?", env);
     await env.ANSWERS.put(key, JSON.stringify(stored));
 
     const response = await post("  is HE open to remote work  ", "203.0.113.1");

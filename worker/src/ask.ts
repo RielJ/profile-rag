@@ -8,28 +8,34 @@
  *    result, which is then stored in the cache.
  *
  * Failures before the stream starts get a plain JSON `FailedResponse` with
- * the backend's status codes (429 `rate_limited`, 503 `retrieval_failed`,
- * 502 `pi_failed`, 504 `pi_timeout`, 500 `internal_error`). Once the stream
- * has started, a failure is the `result` event's `FailedResponse`, after a 200.
+ * the status codes in src/failure.ts (429 `rate_limited`, 503
+ * `retrieval_failed`, 502 `pi_failed`, 504 `pi_timeout`, 500
+ * `internal_error`). Once the stream has started, a failure is the `result`
+ * event's `FailedResponse`, after a 200: `pi_failed` or `pi_timeout` if the
+ * model's stream breaks, `bad_reply` or `invented_citation` if its reply is
+ * wrong, and `internal_error` if building the result has a bug.
  */
 
 import { BadReply, checkCitations, InventedCitation, parseAnswer } from "./answer";
 import type { CachedResponse } from "./cache";
 import type { Chunk } from "./chunk";
 import { toResponse } from "./citations";
-import { failed, type AskResponse, type FailedCode, type FailedResponse } from "./contract";
-import { replyOf, type StartModel } from "./model";
+import { failed, type AskResponse, type FailedResponse } from "./contract";
+import { FAILED_STATUS, modelFailure, type RefusedCode } from "./failure";
+import { hasModelOutput, replyOf, type StartModel } from "./model";
 import { buildMessages } from "./prompt";
 import type { TakeResult } from "./limits";
 import { forwardWithResult, resultEvent } from "./stream";
 
-/** The backend's limit on a question's length (api/models.py). */
+/**
+ * The longest question the Worker accepts, in characters. The portfolio's
+ * proxy (web-portfollio app/lib/profile-rag-proxy.server.ts) repeats it.
+ */
 export const QUESTION_MAX_LENGTH = 1000;
 
 /** How long an answer may take, from the model call to its last event. */
 export const ANSWER_TIMEOUT_MS = 60_000;
 
-/** The status code of a failure before the stream starts, as in the backend's api/routes.py. */
 /**
  * How much of a stream with no model output to log. Such a stream holds an
  * error, such as Workers AI's used-up daily allocation, sent after the stream
@@ -41,17 +47,9 @@ const EVENTS_HEAD_LENGTH = 300;
 /** `{ events_head }` for a `bad_reply` stream with no model output, else nothing. */
 function errorStreamHead(result: AskResponse, events: string): { events_head?: string } {
   if (result.status !== "failed" || result.error !== "bad_reply") return {};
-  if (events.includes('"choices"')) return {};
+  if (hasModelOutput(events)) return {};
   return { events_head: events.slice(0, EVENTS_HEAD_LENGTH) };
 }
-
-export const FAILED_STATUS = {
-  rate_limited: 429,
-  internal_error: 500,
-  retrieval_failed: 503,
-  pi_timeout: 504,
-  pi_failed: 502,
-} as const satisfies Partial<Record<FailedCode, number>>;
 
 /** The answer cache, already keyed to this question. */
 export interface QuestionCache {
@@ -70,8 +68,11 @@ export interface AskDeps {
   retrieve: (question: string) => Promise<Chunk[]>;
   startModel: StartModel;
   waitUntil: (promise: Promise<unknown>) => void;
-  /** Aborts the answer; defaults to ANSWER_TIMEOUT_MS from now. */
-  signal?: AbortSignal;
+  /**
+   * The answer's deadline, started just before the model call, after the
+   * cache, the limits and search. Defaults to ANSWER_TIMEOUT_MS from then.
+   */
+  answerDeadline?: () => AbortSignal;
   log?: (event: Record<string, unknown>) => void;
 }
 
@@ -93,8 +94,7 @@ export function readQuestion(body: unknown): { question: string } | { problem: s
 export async function askStream(question: string, deps: AskDeps): Promise<Response> {
   const { requestId, waitUntil } = deps;
   const log = deps.log ?? ((event) => console.log(JSON.stringify(event)));
-  const signal = deps.signal ?? AbortSignal.timeout(ANSWER_TIMEOUT_MS);
-  const refuse = (error: keyof typeof FAILED_STATUS, cause: unknown): Response => {
+  const refuse = (error: RefusedCode, cause: unknown): Response => {
     log({ event: "ask_failed", request_id: requestId, error, cause: String(cause) });
     return Response.json(failed(error, requestId), {
       status: FAILED_STATUS[error],
@@ -126,18 +126,32 @@ export async function askStream(question: string, deps: AskDeps): Promise<Respon
     return refuse("retrieval_failed", error);
   }
 
+  const signal = (deps.answerDeadline ?? (() => AbortSignal.timeout(ANSWER_TIMEOUT_MS)))();
   let started;
   try {
     started = await deps.startModel(buildMessages(question, chunks), signal);
   } catch (error) {
-    return refuse(signal.aborted ? "pi_timeout" : "pi_failed", error);
+    return refuse(modelFailure(signal), error);
   }
 
   const body = forwardWithResult({
     body: started.body,
     signal,
     finish: (events) => {
-      const result = resultOf(replyOf(events), chunks, started.model, requestId);
+      let result: AskResponse;
+      try {
+        result = resultOf(replyOf(events), chunks, started.model, requestId);
+      } catch (error) {
+        // A bug here, not the model: say so, and do not cache it.
+        log({
+          event: "ask_failed",
+          request_id: requestId,
+          model: started.model,
+          error: "internal_error",
+          cause: String(error),
+        });
+        return failed("internal_error", requestId);
+      }
       log({
         event: "answer",
         request_id: requestId,
@@ -150,7 +164,7 @@ export async function askStream(question: string, deps: AskDeps): Promise<Respon
       return result;
     },
     fail: (error): FailedResponse => {
-      const code = signal.aborted ? "pi_timeout" : "pi_failed";
+      const code = modelFailure(signal);
       log({ event: "ask_failed", request_id: requestId, error: code, cause: String(error) });
       return failed(code, requestId);
     },

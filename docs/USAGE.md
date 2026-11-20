@@ -1,6 +1,6 @@
 # Using profile-rag
 
-This guide covers setup, the web page, the command line, the API, the corpus, evaluation, testing, privacy, and troubleshooting. For a short overview, read the [README](../README.md). For the internals, read [`ARCHITECTURE.md`](ARCHITECTURE.md).
+This guide covers setup, the command line, the HTTP API, the corpus, evaluation, testing, privacy, and troubleshooting. For a short overview, read the [README](../README.md). For the internals, read [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Prerequisites
 
@@ -9,12 +9,12 @@ This guide covers setup, the web page, the command line, the API, the corpus, ev
 | Docker with Compose v2 | Docker Desktop or OrbStack (tested: Docker 28.0, Compose 2.34) | [Docker](https://docs.docker.com/get-docker/), [OrbStack](https://orbstack.dev) | Postgres with pgvector |
 | just | 1.39 or later (tested: 1.58) | `brew install just`, or [just](https://just.systems/man/en/packages.html) | Runs the project's commands (`justfile`) |
 | uv | 0.13.6 or later | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Python 3.14 and the backend dependencies. uv downloads Python itself |
-| Node | 26 or later (`.node-version` pins 26) | [fnm](https://github.com/Schniz/fnm) (`fnm install 26`) or [nodejs.org](https://nodejs.org) | The frontend. The justfile uses fnm when it is installed |
-| pnpm | 12.16.1 | `corepack enable pnpm`, or [pnpm](https://pnpm.io/installation) | The frontend dependencies |
+| Node | 26 or later (`.node-version` pins 26) | [fnm](https://github.com/Schniz/fnm) (`fnm install 26`) or [nodejs.org](https://nodejs.org) | The Worker in `worker/` only. `just demo` does not need it. The justfile uses fnm when it is installed |
+| pnpm | 12.16.1 | `corepack enable pnpm`, or [pnpm](https://pnpm.io/installation) | The Worker's dependencies |
 | Ollama | Recent (tested: 0.40) | [Ollama](https://ollama.com/download), then `ollama pull nomic-embed-text:v1.5` | Embeddings, on the host |
 | Pi | 1.5.0 (tested) | [Pi](https://pi.dev), then `pi` and `/login` | The answer model. Pi needs credentials for the provider of `PROFILE_RAG_PI_MODEL` |
 
-`just demo` checks each of these before it changes anything, and prints one fix for each missing item.
+`just demo` checks Docker, uv, Ollama, and Pi before it changes anything, and prints one fix for each missing item.
 
 ## Quick start
 
@@ -27,23 +27,23 @@ just demo
 
 `just demo` runs these steps:
 
-1. It checks the tools in the table above. Then it installs the backend dependencies (`uv sync`) and checks the ports, Ollama and the embedding model, Pi, and the corpus. If anything is missing, it lists every problem and stops before it starts the database.
-2. It installs the frontend dependencies (`pnpm install`).
-3. It starts Postgres in Docker and waits until the database is healthy.
-4. It applies the migrations in `db/migrations/`.
-5. It indexes `corpus-example/` with the default embedding model, `nomic-v15`.
-6. It starts the API and the frontend, waits until both answer, and prints the address:
+1. It checks Docker and uv. Then it installs the backend dependencies (`uv sync`) and checks the database port, Ollama and the embedding model, Pi, and the corpus. If anything is missing, it lists every problem and stops before it starts the database.
+2. It starts Postgres in Docker and waits until the database is healthy.
+3. It applies the migrations in `db/migrations/`.
+4. It indexes `corpus-example/` with the default embedding model, `nomic-v15`.
+5. It prints how to ask a question:
 
 ```text
-The demo is running. Corpus: corpus-example. Embedding model: nomic-v15.
+The corpus is indexed. Corpus: corpus-example. Embedding model: nomic-v15.
 
-  Open http://127.0.0.1:5173
-  API: http://127.0.0.1:8000/docs
+Ask a question from the terminal:
+
+  cd backend && uv run profile-rag ask --model nomic-v15 "Your question?"
 ```
 
-Press Ctrl-C to stop the API and the frontend. The database keeps running. `just db-down` stops it, and `just db-reset` also deletes its data. You can run `just demo` again at any time: the database stays up, applied migrations are skipped, and unchanged chunks are skipped.
+The database keeps running. `just db-down` stops it, and `just db-reset` also deletes its data. You can run `just demo` again at any time: the database stays up, applied migrations are skipped, and unchanged chunks are skipped.
 
-On a machine with warm uv and pnpm caches, the first `just demo` takes about 40 seconds and a second run about 5 seconds. A cold first run also downloads Python 3.14, the Python and Node packages, and the Postgres image.
+A cold first run also downloads Python 3.14, the Python packages, and the Postgres image.
 
 The demo uses the database in `.env`. `just demo` replaces the chunks of that database's table with the corpus it indexes.
 
@@ -56,26 +56,9 @@ COMPOSE_PROJECT_NAME=profile-rag-second
 DB_PORT=5453
 DATABASE_URL=postgresql://profile_rag:profile_rag@127.0.0.1:5453/profile_rag
 TEST_DATABASE_URL=postgresql://profile_rag:profile_rag@127.0.0.1:5453/profile_rag_test
-API_PORT=8010
-FRONTEND_PORT=5183
 ```
 
-Set `API_PORT` or `FRONTEND_PORT` the same way when another program already uses port 8000 or 5173. `just backend` and `just frontend` use these ports too.
-
 ## Use the app
-
-### The web page
-
-Open the address that `just demo` prints and type a question, for example "What web framework did Dana use for the shipment-tracking API?". Enter asks the question. Shift+Enter adds a new line. Each question starts one Pi process, so an answer takes a few seconds.
-
-The page shows one of these results:
-
-- **Answer**: the answer, with numbered markers such as `[1]` that jump to the evidence they cite. Each evidence item gives the source title, who wrote the source, and the excerpt. The title is a link when the source has a public `http(s)` URL. A small line names the model that answered.
-- **Not in the evidence**: the approved sources do not answer the question. The page gives the model's reason.
-- **No answer this time**: the server failed, for example because Pi timed out. The page shows a request ID. The API's log has a line with the same request ID, the error class, and the error code.
-- **The question was not accepted** (HTTP 422), or **Connection problem** (no network, or a response that the page cannot read).
-
-To run the API and the frontend in separate terminals, with auto-reload for the API, run `just backend` and `just frontend` after `just demo` has indexed once. Vite forwards every `/api` request to the API, so the browser talks to one origin.
 
 ### The command line
 
@@ -90,45 +73,19 @@ uv run profile-rag agent "What web framework did Dana use for the shipment-track
 
 - `search` prints the retrieved chunks and calls no model. `--mode` is `dense` (the default for `search`), `mmr`, or `hybrid`. Hybrid search fuses dense results with a keyword search. `--model` selects the embedding model: `nomic-v15` (the default) or `qwen3-06b`.
 - `ask` retrieves chunks, gives them to the answer model, and prints the answer and its citations. It makes one Pi call. If the evidence does not answer the question, it prints `Unknown.` and the reason.
-- `agent` first has the model grade the retrieved chunks, and rewrites the question once if they are not relevant. It makes 2 Pi calls, or 4 with a rewrite. The API and `ask` use the plain chain. [`docs/eval/agent-decision.md`](eval/agent-decision.md) gives the reason.
+- `agent` first has the model grade the retrieved chunks, and rewrites the question once if they are not relevant. It makes 2 Pi calls, or 4 with a rewrite. `ask` and the Worker use the plain chain. [`docs/eval/agent-decision.md`](eval/agent-decision.md) gives the reason.
 
 The exit codes of `ask` and `agent` are 0 for an answer or `Unknown.`, 2 for a setup error (no table, Ollama not running) or a failed evidence search, 3 when Pi fails, and 4 when the model's reply is rejected (not the answer format, or a citation of a chunk it was not given). `agent` also exits with 5 if the graph exceeds its step limit, which means a bug.
 
 Run `uv run profile-rag --help` for every command, including `index`, `eval`, `compare-agent`, `hnsw`, and `corpus`. "Index and search", "Generation", and "Agent graph" in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) explain them.
 
-### The API
+### The HTTP API
 
-`POST /api/ask` answers a question with the answer chain, as `ask` does:
-
-```sh
-curl -s -X POST http://127.0.0.1:8000/api/ask \
-  -H 'content-type: application/json' \
-  -d '{"question": "What is lantern-queue and what is it built on?"}'
-```
-
-The body takes `question` (1 to 1000 characters, not blank), and optionally `mode` (`dense`, `hybrid`, or `mmr`) and `k` (1 to 20). The response's `status` is one of these:
-
-| `status` | HTTP | Fields |
-| --- | --- | --- |
-| `answered` | 200 | `answer`, `citations`, `model` |
-| `unknown` | 200 | `reason`, `model` (null when nothing was retrieved) |
-| `failed` | 500, 502, 503, or 504 | `error`, `message`, `request_id` |
-
-`POST /api/ask/stream` takes the same body and streams the answer while the model writes it, as newline-delimited JSON. The `draft` lines hold unchecked text, and the last line is a `result` with the response that `POST /api/ask` would return. It answers 200 even when the answer fails, so read the `status` in the last line:
-
-```sh
-curl -sN -X POST http://127.0.0.1:8000/api/ask/stream \
-  -H 'content-type: application/json' \
-  -d '{"question": "What is lantern-queue and what is it built on?"}'
-```
-
-`GET /api/sources/{id}` returns the metadata of one approved, visible source, never its text. `GET /api/health` reports the database. The OpenAPI page is at `/docs` on the API's port. "API" in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) lists the error codes.
-
-The API logs one warning line for each failed answer, with the request ID, the exception class, and the error code. `PROFILE_RAG_LOG_LEVEL` in `.env` sets the level (default `INFO`). The log never holds the question, the reply, or Pi's error output.
+The only HTTP API is the Cloudflare Worker in `worker/`. It answers with Workers AI, not Pi, and searches the `bge-m3` chunks in Neon. `just worker-dev` runs it locally with `wrangler dev`; copy `worker/.dev.vars.example` to `worker/.dev.vars` first. [`DEPLOY.md`](DEPLOY.md) covers its routes, error codes, and deployment.
 
 ## What the corpus covers
 
-`corpus-example/` is a fictional profile of Dana Whitlock. Every name, company, URL, and address in it is invented. It has 3 approved sources and 15 chunks: a resume, a project README (`lantern-queue`), and a blog post. It also registers a LinkedIn export and a note that are not approved, so the index skips them. The tests, the browser tests, the demo, and the example evaluation set all use this corpus.
+`corpus-example/` is a fictional profile of Dana Whitlock. Every name, company, URL, and address in it is invented. It has 3 approved sources and 15 chunks: a resume, a project README (`lantern-queue`), and a blog post. It also registers a LinkedIn export and a note that are not approved, so the index skips them. The tests, the demo, and the example evaluation set all use this corpus.
 
 A real corpus lives in `corpus/`, which Git ignores except for its README. Each source has a kind: `resume`, `github`, `portfolio`, `blog`, `linkedin`, or `note`. Each source also has an attribution, which tells the model whose claim a sentence is:
 
@@ -177,7 +134,7 @@ The answer names the attribution ("According to Dana's resume, ..."), so the app
 
    `corpus` is the folder that holds `sources.yaml` and `approved/`, relative to the repository root. If the folder has no approved source, `just demo` stops before it touches the database, with a message that gives the number of registered sources and how to approve one. It does not print source titles or text.
 
-To index without starting the servers, run `just index corpus`. Add the model name, as in `just index corpus qwen3-06b`, to index the second embedding model (pull `qwen3-embedding:0.6b` first). Each model has its own table.
+To index without the demo's checks, run `just index corpus`. Add the model name, as in `just index corpus qwen3-06b`, to index the second embedding model (pull `qwen3-embedding:0.6b` first). Each model has its own table.
 
 A new splitter version (`SPLITTER_VERSION` in `backend/src/profile_rag/corpus/splitting.py`) changes every chunk ID. After that change, run `just index` again for each model and each corpus. The command replaces every row and reports them as added and deleted.
 
@@ -218,23 +175,14 @@ The dev set has 39 questions (34 answerable, 5 unanswerable) over the real corpu
 The tests need the database. Start it with `just demo` or `just db-up`, then run:
 
 ```sh
-just lint        # ruff and oxlint, formatting, and the API types check
+just lint        # ruff and oxlint, formatting, and the Worker contract check
 just typecheck   # pyrefly and tsc
-just test        # pytest and Vitest
+just test        # pytest and the Worker's Vitest tests
 ```
 
 The tests use fake embeddings, a fake chat model, and a fake Pi script. They need no Ollama and no Pi, and they call no model. To also run the tests that call a real Ollama and a real Pi, run `uv --directory backend run pytest --live`. The Pi tests check the installed version and its flags, and make one model call.
 
-The browser tests run in Playwright's Chromium, at desktop size and at 375 pixels wide. Install the browser once per machine (about 170 MB), then run them:
-
-```sh
-just e2e-install
-just e2e
-```
-
-`just e2e` starts its own API server on port 8765 and Vite on port 5174, and stops both at the end. The API server runs the real routes over `corpus-example/` in a throwaway database, with fake embeddings and a fake Pi. It never uses `.env`'s database, `corpus/`, or the Pi settings.
-
-The frontend's API types, `frontend/src/api/schema.d.ts`, are generated from the OpenAPI schema. After you change a route or a model in `backend/src/profile_rag/api/`, run `just types`. `just lint` fails while the file is out of date.
+The Worker reads the prompt, the failure messages, and the excerpt rules from `worker/src/generated/backend-contract.json`, which `just worker-contract` writes from the Python code. `just lint` fails while that file is out of date.
 
 Run `just` with no arguments to list every command.
 
@@ -243,23 +191,23 @@ Run `just` with no arguments to list every command.
 - **What stays local.** The corpus, the database, the embeddings (Ollama runs on your machine), the evaluation questions, and the per-question results. `corpus/` and `eval/` are in `.gitignore` except for their READMEs, and committed reports in `docs/eval/` hold only numbers and question IDs.
 - **What leaves the machine.** For each question, Pi sends the question and the retrieved excerpts to the provider of `PROFILE_RAG_PI_MODEL`. Only approved chunks with visibility `public` or `sanitized` are retrieved, so the provider sees only text that any visitor may see.
 - **Pi isolation.** Each question starts a new `pi --mode rpc` process in an empty temporary folder, with no session file, no tools, no extensions, skills, or context files, and no project `.pi/` settings. The prompt goes in on stdin, so it is not in the process list. "Pi isolation" in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) lists every flag and the reason for it.
-- **Tracing guard.** Tracing to LangSmith is off unless `LANGSMITH_TRACING=true`. With tracing on, the API and every command refuse to start unless `CORPUS_DIR=corpus-example` is set in the environment and `LANGSMITH_API_KEY` is set. Commands that read the database also check that the table holds exactly `corpus-example/`. Traces then hold run names, timings, and error class names, without inputs, outputs, metadata, or error messages. "Tracing" in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) explains the rules.
-- **Logs and errors.** API logs and error messages hold request IDs, error classes, and error codes. They never hold the question, the model's reply, or Pi's error output.
+- **Tracing guard.** Tracing to LangSmith is off unless `LANGSMITH_TRACING=true`. With tracing on, every command refuses to start unless `CORPUS_DIR=corpus-example` is set in the environment and `LANGSMITH_API_KEY` is set. Commands that read the database also check that the table holds exactly `corpus-example/`. Traces then hold run names, timings, and error class names, without inputs, outputs, metadata, or error messages. "Tracing" in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) explains the rules.
+- **Logs and errors.** Error messages hold error classes and error codes. They never hold the question, the model's reply, or Pi's error output.
 
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
-| `Port 8000 (the API) is in use`, or the same for 5173 or 5443 | Stop the program that uses the port. `lsof -nP -iTCP:<port> -sTCP:LISTEN` names it. Or set `API_PORT`, `FRONTEND_PORT`, or `DB_PORT` in `.env`. Use the same port in `DATABASE_URL` and `TEST_DATABASE_URL` as in `DB_PORT`. |
+| `Port 5443 (the database) is in use` | Stop the program that uses the port. `lsof -nP -iTCP:<port> -sTCP:LISTEN` names it. Or set `DB_PORT` in `.env`. Use the same port in `DATABASE_URL` and `TEST_DATABASE_URL` as in `DB_PORT`. |
 | `Another checkout (...) uses the same Compose project name` | Set `COMPOSE_PROJECT_NAME` and a free `DB_PORT` in this checkout's `.env`, as in [Run a second checkout next to the first](#run-a-second-checkout-next-to-the-first). |
 | `Ollama does not answer at http://127.0.0.1:11434` | Start Ollama (`ollama serve`, or open the Ollama app), or set `OLLAMA_URL` in `.env`. |
 | `Ollama has no nomic-embed-text:v1.5` | Run `ollama pull nomic-embed-text:v1.5`. |
 | `Ollama's nomic-embed-text:v1.5 has digest ..., but vectorstore/models.py expects ...` | The tag now points at other weights. Vectors from the two versions do not match. `backend/src/profile_rag/vectorstore/models.py` explains how to move to new weights. |
 | `Pi ('pi') is not on PATH` | Install Pi and log in (`pi`, then `/login`), or set `PROFILE_RAG_PI_BIN` in `.env` to its path. |
-| The page shows **No answer this time**, and the API log has `code=pi_failed` | Pi started but the model call failed, usually because Pi has no credentials for the provider of `PROFILE_RAG_PI_MODEL`. Run `pi` and `/login`. `just demo` cannot check credentials without a model call. |
-| `code=pi_timeout` | The model took longer than `PROFILE_RAG_PI_TIMEOUT_SECONDS` (default 120). Raise it in `.env`. |
+| `ask` exits with 3 (Pi failed) | Pi started but the model call failed, usually because Pi has no credentials for the provider of `PROFILE_RAG_PI_MODEL`. Run `pi` and `/login`. `just demo` cannot check credentials without a model call. |
+| `ask` reports a Pi timeout | The model took longer than `PROFILE_RAG_PI_TIMEOUT_SECONDS` (default 120). Raise it in `.env`. |
 | `has no approved source` | Approve a source (see [Use your own corpus](#use-your-own-corpus)), or run `just demo` with no argument. |
-| `just lint` fails with `frontend/src/api/schema.d.ts is out of date` | Run `just types`, then commit the regenerated file with the API change. |
+| `just lint` fails because `backend-contract.json` is out of date | Run `just worker-contract`, then commit the regenerated file with the Python change. |
 | `just test` fails to connect to the database | Run `just db-up`. Check that `TEST_DATABASE_URL` uses `DB_PORT`. |
 | `fnm has no Node 26` | Run `fnm install 26`. |
 
@@ -267,18 +215,17 @@ Run `just` with no arguments to list every command.
 
 By default this app runs on one machine, for its owner. [`DEPLOY.md`](DEPLOY.md) covers the public setup: a Cloudflare Worker (`worker/`) behind a website's server-side proxy, with Workers AI instead of Pi, an answer cache, an access key, and hourly and daily question limits. These points stay open:
 
-- Provider access: run locally, every question spends the owner's Pi credentials. Never put the Python API online with `PROFILE_RAG_LLM=pi`.
-- Concurrency: the limits count questions, not concurrent requests.
-- Shared counts in the Python API: its limits live in memory, so a restart resets them. The Worker keeps its counts in a Durable Object.
-- Logging: the Python API logs to stderr only, with no retention policy. The Worker's logs stay in Cloudflare's Workers Logs.
-- Network exposure: neither API sets up CORS. The deployed setup relies on the browser never calling the API directly.
+- Provider access: run locally, every question spends the owner's Pi credentials. The Python code has no server, so Pi stays on your machine.
+- Concurrency: the Worker's limits count questions, not concurrent requests.
+- Logging: the Worker's logs stay in Cloudflare's Workers Logs.
+- Network exposure: the Worker sets up no CORS. The deployed setup relies on the browser never calling it directly.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
-| `backend/` | The FastAPI service and the `profile-rag` command-line tool (Python) |
-| `frontend/` | The React page (TypeScript, Vite). Browser tests are in `frontend/tests/e2e/` |
+| `backend/` | The `profile-rag` command-line tool: corpus, index, search, answers, evaluation (Python) |
+| `worker/` | The HTTP API, a Cloudflare Worker (TypeScript). [`DEPLOY.md`](DEPLOY.md) |
 | `db/` | Database initialization and migrations |
 | `scripts/` | `demo.sh`, which `just demo` runs |
 | `corpus/` | The real corpus. Git ignores everything except its README |

@@ -34,9 +34,6 @@ class _Model:
     # service never cuts a text without an error: Ollama does, at the
     # model's context length.
     max_words: int
-    # The same weights in fastembed (fastembed_embeddings.py), for a server
-    # without Ollama. None when fastembed has no model whose vectors match.
-    fastembed_name: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -75,7 +72,6 @@ NOMIC_V15 = OllamaModel(
     document_prefix="search_document: ",
     query_prefix="search_query: ",
     max_words=1000,
-    fastembed_name="nomic-ai/nomic-embed-text-v1.5",
 )
 
 # Qwen3-Embedding 0.6B: the query format is `get_detailed_instruct` from the

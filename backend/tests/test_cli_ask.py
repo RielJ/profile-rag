@@ -24,7 +24,7 @@ from langchain_core.runnables import RunnableLambda
 from typer.testing import CliRunner, Result
 
 from profile_rag import cli
-from profile_rag.api.models import FailedCode
+from profile_rag.answers import FailedCode
 from profile_rag.generation.pi_chat_model import PiChatModel
 from profile_rag.generation.pi_rpc import PiConfig, PiError
 from profile_rag.settings import Settings, get_settings

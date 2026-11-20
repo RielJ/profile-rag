@@ -99,7 +99,7 @@ from pydantic import ValidationError
 from profile_rag import rag, tracing
 from profile_rag.agent.errors import AgentLoopError, GradeParseError, RewriteError
 from profile_rag.agent.graph import build_graph, run_agent
-from profile_rag.api.models import FailedCode
+from profile_rag.answers import FailedCode
 from profile_rag.corpus import documents, registry, review_session, sources_table, splitting
 from profile_rag.corpus.registry import (
     REGISTRY_FILENAME,
@@ -121,7 +121,7 @@ from profile_rag.evaluation import agent_compare, ann_compare
 from profile_rag.evaluation.labels import ResolvedQuestion, resolve_labels
 from profile_rag.evaluation.questions import QuestionFileError, load_questions
 from profile_rag.evaluation.runner import RunConfig, run_evaluation
-from profile_rag.generation import chat_models
+from profile_rag.generation import pi_chat_model
 from profile_rag.generation.answer import InventedCitation, Unknown
 from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.pi_rpc import PiError, PiProcessError, PiTimeout
@@ -717,8 +717,8 @@ AnswerKOption = Annotated[int, typer.Option("-k", min=1, help="How many chunks t
 
 
 def _pi_model(settings: Settings) -> BaseChatModel:
-    """The answer model from the settings (Pi by default). Tests replace this function."""
-    return chat_models.from_settings(settings)
+    """Pi, the answer model, from the settings. Tests replace this function."""
+    return pi_chat_model.from_settings(settings)
 
 
 def _ask_failure(message: str, code: int) -> NoReturn:

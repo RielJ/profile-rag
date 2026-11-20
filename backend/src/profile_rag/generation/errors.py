@@ -1,13 +1,11 @@
 """The errors every answer-model backend raises.
 
-`rag.failure_code` sorts errors by these two classes, so the API and the CLI
-report a failed model call the same way whichever backend made it:
-`ModelTimeout` becomes `pi_timeout` and any other `ModelError` becomes
-`pi_failed`. The wire codes keep their `pi_` names because they are part of
-the API contract (api/models.py).
+`rag.failure_code` sorts errors by these two classes: `ModelTimeout`
+becomes `pi_timeout` and any other `ModelError` becomes `pi_failed`. The
+codes are part of the answer contract (answers.py, `FailedCode`), which the
+Worker shares.
 
-Backends: Pi (generation/pi_rpc.py, whose `PiError` subclasses these) and an
-OpenAI-compatible HTTP API (generation/openai_chat_model.py).
+The backend is Pi (generation/pi_rpc.py, whose `PiError` subclasses these).
 """
 
 

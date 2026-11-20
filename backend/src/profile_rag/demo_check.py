@@ -1,6 +1,6 @@
 """The prerequisite checks of `just demo` that need Python.
 
-scripts/demo.sh checks the tools first (Docker, uv, Node, pnpm), then runs
+scripts/demo.sh checks the tools first (Docker, uv), then runs
 `python -m profile_rag.demo_check`, before it starts the database or changes
 anything. This module runs every check, prints one line with a fix for each
 one that fails, and exits 1 if any failed, so a new developer sees every
@@ -10,9 +10,8 @@ The checks:
 
 - `.env` is readable and `DATABASE_URL` uses the port that compose.yaml
   publishes (`DB_PORT`).
-- The ports for the database, the API, and the frontend are free. The
-  database port may be taken by this project's own database container
-  (`--db-running`), so a second `just demo` works.
+- The database port is free. It may be taken by this project's own database
+  container (`--db-running`), so a second `just demo` works.
 - Ollama answers at `OLLAMA_URL` and has the embedding model, with the digest
   that vectorstore/models.py expects. For a Workers AI model, the Cloudflare
   account ID and API token are set instead (not called).
@@ -51,8 +50,6 @@ PortProbe = Callable[[int], bool]
 @dataclass(frozen=True)
 class Ports:
     db: int
-    api: int
-    frontend: int
     db_running: bool  # this project's database container is up, so it holds `db`
 
 
@@ -90,15 +87,6 @@ def check_ports(ports: Ports, in_use: PortProbe = port_in_use) -> list[str]:
             f"Port {ports.db} (the database) is in use by another program. Set DB_PORT in .env"
             " to a free port, and use the same port in DATABASE_URL and TEST_DATABASE_URL."
         )
-    for port, name, variable in (
-        (ports.api, "the API", "API_PORT"),
-        (ports.frontend, "the frontend", "FRONTEND_PORT"),
-    ):
-        if in_use(port):
-            problems.append(
-                f"Port {port} ({name}) is in use. Stop the program that uses it (`lsof -nP"
-                f" -iTCP:{port} -sTCP:LISTEN` names it), or set {variable} in .env to a free port."
-            )
     return problems
 
 
@@ -185,8 +173,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model", required=True, choices=sorted(MODELS))
     parser.add_argument("--root", required=True, type=Path, help="The corpus root.")
     parser.add_argument("--db-port", required=True, type=int)
-    parser.add_argument("--api-port", required=True, type=int)
-    parser.add_argument("--frontend-port", required=True, type=int)
     parser.add_argument("--db-running", action="store_true")
     args = parser.parse_args(argv)
 
@@ -196,7 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         names = ", ".join(str(item["loc"][0]) for item in error.errors())
         print(f"  - .env is missing or has invalid values for: {names}.", file=sys.stderr)
         return 1
-    ports = Ports(args.db_port, args.api_port, args.frontend_port, args.db_running)
+    ports = Ports(args.db_port, args.db_running)
     problems = run_checks(settings, MODELS[args.model], args.root.resolve(), ports)
     for problem in problems:
         print(f"  - {problem}", file=sys.stderr)

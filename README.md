@@ -11,11 +11,11 @@ The repository ships a fictional corpus about Dana Whitlock, so you can run the 
 3. **Retrieve.** A question finds chunks by dense search, MMR, or hybrid search (dense results fused with a keyword search). Only chunks from approved sources with visibility `public` or `sanitized` can come back.
 4. **Answer.** The answer model gets the question and the retrieved chunks through [Pi](https://pi.dev). It must cite chunks it was given and say whose claim each sentence is ("According to Dana's resume, ..."). If the reply does not match the answer format, or it cites a chunk that was not retrieved, the app rejects the reply.
 
-A React page, a FastAPI service, and the `profile-rag` command-line tool all ask questions through the same answer chain. An experimental agent graph (`profile-rag agent`) grades the retrieved chunks and can rewrite the question once.
+Locally, the `profile-rag` command-line tool asks questions through this answer chain. The HTTP API is a Cloudflare Worker (`worker/`) that ports the same chain to TypeScript, with Workers AI as the model. An experimental agent graph (`profile-rag agent`) grades the retrieved chunks and can rewrite the question once.
 
 ## Quick start
 
-You need Docker with Compose v2, uv, Node 26 with pnpm, Ollama with `nomic-embed-text:v1.5`, and Pi logged in to a model provider. [`docs/USAGE.md`](docs/USAGE.md) lists the versions and how to install each one.
+You need Docker with Compose v2, uv, Ollama with `nomic-embed-text:v1.5`, and Pi logged in to a model provider. The Worker also needs Node 26 with pnpm. [`docs/USAGE.md`](docs/USAGE.md) lists the versions and how to install each one.
 
 ```sh
 git clone <this repository> profile-rag-app
@@ -24,23 +24,27 @@ cp .env.example .env
 just demo
 ```
 
-`just demo` checks the tools, starts Postgres in Docker, applies the migrations, indexes `corpus-example/`, and starts the API and the frontend. It then prints the address to open, `http://127.0.0.1:5173`. If a tool is missing, `just demo` stops before it changes anything and prints the fix.
+`just demo` checks the tools, starts Postgres in Docker, applies the migrations, and indexes `corpus-example/`. If a tool is missing, it stops before it changes anything and prints the fix. Then ask a question:
 
-Ask a question such as "What web framework did Dana use for the shipment-tracking API?". To use your own sources, review them with `profile-rag corpus review` and run `just demo corpus`. [`corpus/README.md`](corpus/README.md) gives the steps.
+```sh
+cd backend
+uv run profile-rag ask "What web framework did Dana use for the shipment-tracking API?"
+```
+
+`just worker-dev` runs the HTTP API (the Worker) locally; [`docs/DEPLOY.md`](docs/DEPLOY.md) covers its setup. To use your own sources, review them with `profile-rag corpus review` and run `just demo corpus`. [`corpus/README.md`](corpus/README.md) gives the steps.
 
 ## Privacy
 
-The corpus, the database, the embeddings, and the evaluation questions stay on your machine. Git ignores `corpus/` and `eval/`, except for their READMEs. For each question, Pi sends the question and the retrieved excerpts to the model provider. Each question runs in a new Pi process with no tools, no session file, and no project settings. Logs hold request IDs and error codes, never questions or answers.
+The corpus, the database, the embeddings, and the evaluation questions stay on your machine. Git ignores `corpus/` and `eval/`, except for their READMEs. For each question, Pi sends the question and the retrieved excerpts to the model provider. Each question runs in a new Pi process with no tools, no session file, and no project settings. Logs and error messages hold error classes and codes, never questions or answers.
 
-By default the app runs on one machine, for its owner, with no access key and no rate limit. [`docs/DEPLOY.md`](docs/DEPLOY.md) puts the API online for a website to call, as a Cloudflare Worker (`worker/`): answers come from `gpt-oss-120b` on Workers AI instead of Pi, repeated questions are answered from a cache, and an access key plus hourly and daily question limits guard the free quota. The model provider then sees each question and its excerpts, so deploy only a corpus you are willing to publish.
+By default the app runs on one machine, for its owner, with no access key and no rate limit. [`docs/DEPLOY.md`](docs/DEPLOY.md) puts the Worker (`worker/`) online for a website to call: answers come from `gpt-oss-120b` on Workers AI instead of Pi, repeated questions are answered from a cache, and an access key plus hourly and daily question limits guard the free quota. The model provider then sees each question and its excerpts, so deploy only a corpus you are willing to publish.
 
 ## Development
 
 ```sh
-just lint        # ruff, oxlint, formatting, and the API types check
+just lint        # ruff, oxlint, formatting, and the Worker contract check
 just typecheck   # pyrefly and tsc
-just test        # pytest and Vitest. Needs the database (just db-up)
-just e2e         # Playwright browser tests. Run just e2e-install once first
+just test        # pytest and the Worker's Vitest tests. Needs the database (just db-up)
 ```
 
 The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi. Run `just` with no arguments to list every command.
@@ -49,7 +53,7 @@ The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi.
 
 | Document | Contents |
 | --- | --- |
-| [`docs/USAGE.md`](docs/USAGE.md) | Prerequisites, the web page, the command line, the API, your own corpus, evaluation results, testing, and troubleshooting |
+| [`docs/USAGE.md`](docs/USAGE.md) | Prerequisites, the command line, the HTTP API, your own corpus, evaluation results, testing, and troubleshooting |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The pipeline, the modules, the database tables, Pi isolation, tracing, and the corpus policy |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Putting the API online for free: the Cloudflare Worker, Workers AI, Neon, the answer cache, and the access key and limits |
 | [`corpus/README.md`](corpus/README.md) | How to add, copy, and review a source |
@@ -59,9 +63,8 @@ The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi.
 
 | Path | Contents |
 | --- | --- |
-| `backend/` | The FastAPI service and the `profile-rag` command-line tool (Python 3.14) |
-| `worker/` | The deployed API: a Cloudflare Worker in TypeScript that searches Neon, streams the answer, and caches it |
-| `frontend/` | The React page (TypeScript, Vite) and its browser tests |
+| `backend/` | The `profile-rag` command-line tool: corpus review, indexing, search, answers, and evaluation (Python 3.14) |
+| `worker/` | The HTTP API: a Cloudflare Worker in TypeScript that searches Neon, streams the answer, and caches it |
 | `db/` | Database initialization and migrations |
 | `corpus/`, `eval/` | The real corpus and the private evaluation questions. Git ignores both, except for their READMEs |
 | `corpus-example/`, `eval-example/` | The fictional corpus and its evaluation questions, for the demo and the tests |

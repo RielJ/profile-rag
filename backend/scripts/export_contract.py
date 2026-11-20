@@ -25,12 +25,12 @@ from profile_rag.rag import EXCERPT_CHARS, FAILURES
 from profile_rag.retrievers.dense import VISIBLE_VALUES
 from profile_rag.retrievers.factory import CANDIDATES, dense_candidates
 from profile_rag.retrievers.hybrid import RRF_K
-from profile_rag.settings import Settings
 from profile_rag.vectorstore.models import BGE_M3
 from profile_rag.vectorstore.store import TS_CONFIG
 
-# The Worker searches like the API's default: hybrid mode, `api_k` chunks.
-WORKER_K = Settings.model_fields["api_k"].default
+# How many chunks the Worker's search returns (hybrid mode). This is the one
+# place that sets it; the Worker reads it from the generated JSON.
+WORKER_K = 8
 
 EXPECTED_HUMAN = "Evidence:\n{context}\n\nQuestion: {question}"
 

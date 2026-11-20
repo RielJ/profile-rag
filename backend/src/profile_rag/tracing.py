@@ -1,7 +1,7 @@
 """LangSmith tracing: off unless asked for, and never with corpus text.
 
 `configure_tracing(settings, corpus_dir)` runs once at startup (the CLI's
-root callback, the API's `create_app`), before any LangChain object runs.
+root callback), before any LangChain object runs.
 
 Off: unless `LANGSMITH_TRACING=true` (environment or .env), tracing is
 off. It sets langsmith's global switch to off, so the other names the

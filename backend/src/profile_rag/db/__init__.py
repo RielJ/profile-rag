@@ -1,1 +1,1 @@
-"""Database access: connection pool and migrations."""
+"""Database access: migrations."""

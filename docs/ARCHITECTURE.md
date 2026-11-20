@@ -1,6 +1,6 @@
 # Architecture
 
-profile-rag answers questions about Riel's professional experience from a reviewed corpus. This page describes the indexing pipeline, the retrieval step, answer generation, the agent graph, the API, tracing, the database tables, the corpus policy, and retrieval evaluation.
+profile-rag answers questions about Riel's professional experience from a reviewed corpus. This page describes the indexing pipeline, the retrieval step, answer generation, the agent graph, the response JSON, tracing, the database tables, the corpus policy, and retrieval evaluation.
 
 ## Pipeline
 
@@ -67,9 +67,9 @@ All paths are under `backend/src/profile_rag/`.
 | `corpus/splitting.py` | Splits documents at headings, then by size in words. Starts each chunk's text with its heading path. Gives each chunk a stable `chunk_id`. |
 | `corpus/sources_table.py` | Keeps the `sources` table equal to the approved registry entries. |
 | `vectorstore/models.py` | The embedding models: an `OllamaModel` (Ollama tag, digest) or a `WorkersAIModel` (Workers AI model name), each with dimensions, table name, and prefixes. `bge-m3` is the Workers AI model the Cloudflare Worker searches with; the module says why `bge-base-en-v1.5` and `embeddinggemma-300m` are not offered (they truncate long text silently). |
-| `vectorstore/embedders.py` | Picks the embeddings client for a model by its class: Ollama, fastembed, or Workers AI. The CLI, the API and `just demo` use it. |
+| `vectorstore/embedders.py` | Picks the embeddings client for a model by its class: Ollama or Workers AI. The CLI and `just demo` use it. |
 | `vectorstore/workers_ai_embeddings.py` | The Workers AI REST client (`POST /accounts/{id}/ai/run/{model}`, batches of 100). Every failure, including bge-m3's HTTP 400 for a text over 8,192 tokens, raises `WorkersAIError`, so `index` stops rather than skipping a chunk. Errors carry the status and Cloudflare's error codes, never the token. Settings: `PROFILE_RAG_CF_ACCOUNT_ID`, `PROFILE_RAG_CF_API_TOKEN`. |
-| `vectorstore/ollama_embeddings.py` | The Ollama side of a model: `model_problem` says whether Ollama has the tag with the expected digest and how to fix it, and `for_model` builds its prefixed embeddings. The CLI, the API and `just demo` all use it. |
+| `vectorstore/ollama_embeddings.py` | The Ollama side of a model: `model_problem` says whether Ollama has the tag with the expected digest and how to fix it, and `for_model` builds its prefixed embeddings. The CLI and `just demo` both use it. |
 | `vectorstore/prefixed.py` | `PrefixedEmbeddings`: adds the model's document or query prefix and checks every vector. |
 | `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. `connected(url)` and `searching(url, model, embeddings)` are context managers that close the engine when the block ends, also on an error; the CLI commands use them. |
 | `vectorstore/indexing.py` | Runs LangChain `index()` with a record manager per model. |
@@ -95,15 +95,10 @@ All paths are under `backend/src/profile_rag/`.
 | `agent/errors.py` | `GradeParseError`, `RewriteError`, and `AgentLoopError`. |
 | `evaluation/agent_compare.py` | Runs a question set through the chain and the graph, scores both against the labels, and writes `docs/eval/agent-vs-chain-<set>-<model>.md`. |
 | `tracing.py` | `configure_tracing`: LangSmith tracing off by default, and the guards when it is on. |
-| `db/` | Connection pool and the migration runner for `db/migrations/`. |
-| `rag.py` | `ask(question, chain, request_id=)`: runs the answer chain and maps its result or error to the API's `AskResponse`. `ChainCache` keeps one chain per mode and `k`. |
-| `api/models.py` | The API contract: `AskRequest`, the `AskResponse` union, `Citation`, and `SourceResponse`. |
-| `api/routes.py` | `POST /api/ask`, `POST /api/ask/stream`, `GET /api/sources/{id}`, and the status code of each failure. |
-| `api/search.py` | `open_chains(settings)`: the startup checks and the search store behind `POST /api/ask`. |
-| `api/openapi.py` | Writes the OpenAPI schema to a file without starting a server, for `just types`. |
-| `api/log_config.py` | `configure_logging()`: sends the `profile_rag` loggers to stderr at `PROFILE_RAG_LOG_LEVEL` (default `INFO`). `create_app()` calls it. |
-| `api/` (other) | The FastAPI application and its lifespan (`app.py`), dependencies (`deps.py`), and `GET /api/health` (`health.py`). |
-| `demo_check.py` | The prerequisite checks of `just demo` (`scripts/demo.sh`) that need Python: ports, Ollama and the model digest, Pi on `PATH`, and at least one approved, unchanged source. |
+| `db/` | The migration runner for `db/migrations/`. |
+| `rag.py` | `ask(question, chain, request_id=)`: runs the answer chain and maps its result or error to an `AskResponse`. `ChainCache` keeps one chain per mode and `k`. |
+| `answers.py` | The response JSON: the `AskResponse` union, its three variants, `Citation`, and `FailedCode`. |
+| `demo_check.py` | The prerequisite checks of `just demo` (`scripts/demo.sh`) that need Python: the database port, Ollama and the model digest, Pi on `PATH`, and at least one approved, unchanged source. |
 | `cli.py` | The `profile-rag` command: `corpus`, `chunks show`, `index`, `search`, `ask`, `agent`, `compare-agent`, `eval`, and `hnsw`. |
 
 ## Tables
@@ -322,7 +317,7 @@ The adapter reads records until `agent_settled`, so it waits through Pi's automa
 | `PiProtocolError` | A line that is not a JSON object, a rejected prompt, a request for user input, a disallowed system-prompt section, or no assistant message. |
 | `PiModelError` | The model call ended with a stop reason other than `stop` (provider error, length limit), or the run was aborted. |
 
-No error message contains the prompt or the reply. `ask` and `agent` classify a chain error with `rag.failure_code`, the function the API uses, and look up the exit code in `cli.ANSWER_EXIT`: 2 for `retrieval_failed`, 3 for `pi_timeout` and `pi_failed` (every `PiError`), and 4 for `bad_reply` (`OutputParserException`) and `invented_citation`. An `internal_error` is a bug and is raised with its traceback.
+No error message contains the prompt or the reply. `ask` and `agent` classify a chain error with `rag.failure_code`, and look up the exit code in `cli.ANSWER_EXIT`: 2 for `retrieval_failed`, 3 for `pi_timeout` and `pi_failed` (every `PiError`), and 4 for `bad_reply` (`OutputParserException`) and `invented_citation`. An `internal_error` is a bug and is raised with its traceback.
 
 Tested with Pi 1.5.0. `tests/test_pi_live.py` (run with `--live`) checks the version, checks that `pi --help` lists every flag above, and sends one prompt. That prompt test checks the system-prompt sections and that no session file appears. The other tests use `tests/fake_pi.py`, a script that replays scripted RPC records, and need no Pi.
 
@@ -353,26 +348,9 @@ The longest path has six steps: retrieve, grade, rewrite, retrieve, grade, gener
 
 The chain stays the default answer path. On the example set, the graph answered the same questions as the chain, with 36 Pi calls instead of 14. [`docs/eval/agent-decision.md`](eval/agent-decision.md) gives the numbers and says when to revisit the decision.
 
-## API
+## Answer responses
 
-The FastAPI application in `api/` serves four routes under `/api`. The request and response models in `api/models.py` are the contract. Every model forbids unknown fields.
-
-| Route | Does |
-| --- | --- |
-| `POST /api/ask` | Answers a question with the answer chain (`generation/chain.py`), as `profile-rag ask` does. The agent graph is not used ([`docs/eval/agent-decision.md`](eval/agent-decision.md)). |
-| `POST /api/ask/stream` | Answers the same way, and streams the answer text while the model writes it. The page uses this route. |
-| `GET /api/sources/{id}` | Returns the metadata of one approved, visible source. |
-| `GET /api/health` | Reports the database: 200 when it answers, 503 when it does not. |
-
-### Startup
-
-The lifespan in `api/app.py` opens the connection pool, then calls `api/search.py`'s `open_chains` in a worker thread. `open_chains` runs the checks of `ask`: `PROFILE_RAG_API_MODEL` (default `nomic-v15`) names a model in `vectorstore/models.py`, Ollama has that model with the expected digest, and the model's chunk table exists. With tracing on, it also checks that the table holds exactly `corpus-example/`. If a check fails, the server does not start. It then opens the search store and builds the default chain, for `PROFILE_RAG_API_MODE` (default `hybrid`) and `PROFILE_RAG_API_K` (default 8). A request that sets `mode` or `k` gets the chain for that pair, which `rag.ChainCache` builds once and keeps. The routes get the cache through `Depends(get_chains)`; tests replace it with one built from a fake retriever and `FakeListChatModel`.
-
-`ask` and `get_source` are plain `def` functions, so FastAPI runs them in its thread pool. The Pi call (up to `PROFILE_RAG_PI_TIMEOUT_SECONDS`) blocks a worker thread, not the event loop. `ask_stream` is `async`, and runs the Pi call in the same thread pool ("Streaming").
-
-### Ask
-
-The request is `{"question": ..., "mode": ..., "k": ...}`. `question` must have 1 to 1000 characters and not be blank. `mode` (`dense`, `hybrid`, or `mmr`) and `k` (1 to 20) are optional. An invalid request returns 422 with FastAPI's validation body, and the chain does not run.
+`rag.py` turns the answer chain's result, or its error, into the response JSON. `answers.py` defines that JSON as Pydantic models, and every model forbids unknown fields. The Python code has no HTTP server: `profile-rag ask` prints these responses, and the Cloudflare Worker builds the same JSON in TypeScript from `src/generated/backend-contract.json` ("Cloudflare Worker").
 
 The response is `AskResponse`, a `RootModel` over three variants with `status` as the discriminator:
 
@@ -382,112 +360,22 @@ The response is `AskResponse`, a `RootModel` over three variants with `status` a
 {"status": "failed", "error": "<code>", "message": "...", "request_id": "..."}
 ```
 
-`rag.ask` maps the chain's result and adds no logic of its own. A citation is `{chunk_id, source_id, source_title, url, attribution, excerpt}`, one per chunk the answer cites (`GroundedAnswer.cited_docs()`), in citation order. The values come from the chunk's metadata. `excerpt` is the chunk text with whitespace collapsed, cut at a word boundary to at most 280 characters. `url` is the source's `url` from `sources.yaml` when it is an `http://` or `https://` link, and null otherwise. Only approved chunks with visibility `public` or `sanitized` are retrieved, so a citation only names a source that may be shown.
+`rag.ask(question, chain, request_id=)` runs the chain and maps its result with `rag.to_response`. It adds no logic of its own. A citation is `{chunk_id, source_id, source_title, section, url, attribution, excerpt}`, one per chunk the answer cites (`GroundedAnswer.cited_docs()`), in citation order. The values come from the chunk's metadata. `section` is the heading path below the source's top heading, or null. `excerpt` is the chunk text after its headings, one line per paragraph or list item, cut at a word boundary to at most `EXCERPT_CHARS` (280) characters. `url` is the source's `url` from `sources.yaml` when it is an `http://` or `https://` link, and null otherwise. Only approved chunks with visibility `public` or `sanitized` are retrieved, so a citation only names a source that may be shown.
 
-`model` is the `model_name` that the chat model puts in its reply's `response_metadata`: for `PiChatModel`, Pi's `provider/model`. A callback (`rag.ModelName`) reads it, so the chain does not change. It is null when no model ran (nothing was retrieved) or the model reported no name.
+`model` is the `model_name` that the chat model puts in its reply's `response_metadata`: for `PiChatModel`, Pi's `provider/model`. A callback (`rag.ModelName`) reads it, so the chain does not change. It is null when no model ran (nothing was retrieved) or the model reported no name. `rag.ChainCache` builds one chain per search mode and `k` and keeps it.
 
-### Streaming
+`rag.failure_code` classifies an error:
 
-`POST /api/ask/stream` takes the same request and returns newline-delimited JSON (`application/x-ndjson`), one `AskStreamEvent` per line:
-
-```text
-{"type": "draft", "text": "Dana built "}
-{"type": "draft", "text": "a job queue"}
-{"type": "result", "response": AskResponse}
-```
-
-The `draft` events carry the answer, or the reason of an `unknown` reply, as the model writes it. The last line is one `result` event with the `AskResponse` that `POST /api/ask` would return. A draft is unchecked: the reply is parsed and its citations are checked only when it is complete, so the result can still be `unknown` or `failed`, and the client must replace the draft with it. The page shows the draft without citation links, then swaps in the checked answer, or the failure message without the draft.
-
-The pieces come from Pi. `pi_rpc.run_prompt` passes the text of each `message_update` record with a `text_delta` event to an `on_text` callback, and `PiChatModel` forwards each piece as LangChain's `on_llm_new_token`. The reply is JSON, so the raw tokens are not shown. `rag.DraftText`, a callback handler, joins the pieces and reads the `answer` or `reason` field out of the partial JSON with `generation/answer.py`'s `draft_text`. It sends only text that extends what it already sent. A field cut inside an escape sequence can briefly be unreadable, and then nothing is sent until the field grows again.
-
-The status code is 200 once the request is valid, because it is sent before the answer exists. A failure arrives as the `failed` response in the last line, with the same code, message, and log line as in `POST /api/ask`, and the request ID is in the `X-Request-ID` header. An invalid request still returns 422. The route runs `rag.ask` in a worker thread, which hands each draft piece to the event loop through a queue. When the client disconnects, the next piece raises `rag.Abandoned` in the worker. That ends the Pi call and kills the process, and the server logs one INFO line with the request ID, not a failure.
-
-### Failures and status codes
-
-A failed answer returns a 5xx status with the `failed` variant as its body. The status code says whose fault the failure is and whether a retry can help, for clients, proxies, and monitoring that look only at the status. The body is the same variant at every status, so the frontend reads `status` and `error` and needs no per-status parsing. `answered` and `unknown` are both successful answers and return 200.
-
-| `error` | HTTP | Raised by |
-| --- | --- | --- |
-| `retrieval_failed` | 503 | The search step: `EmbeddingError`, `ConnectionError` (Ollama unreachable), an `httpx` or Ollama error, or a psycopg or SQLAlchemy error |
-| `pi_timeout` | 504 | `PiTimeout` |
-| `pi_failed` | 502 | Any other `PiError` (`PiProcessError`, `PiProtocolError`, `PiModelError`) |
-| `bad_reply` | 502 | `OutputParserException`: the reply was not a valid answer |
-| `invented_citation` | 502 | `InventedCitation`: the reply cited a chunk it was not given |
-| `internal_error` | 500 | Any other exception: a bug |
-
-`message` is a fixed sentence per code (`rag.FAILURES`), written for a visitor. It never contains the error's own text: an `OutputParserException` holds the whole model reply, and a `PiProcessError` holds Pi's stderr. Every `POST /api/ask` response has an `X-Request-ID` header, and a `failed` body repeats it in `request_id`. The server logs one warning per failure, with the request ID, the exception class name, and the code, and no traceback, message, or reply text. uvicorn configures only its own loggers, so `api/log_config.py` gives the `profile_rag` logger a stderr handler at `PROFILE_RAG_LOG_LEVEL` (default `INFO`). `tests/test_api_logging.py` checks that the warning reaches stderr, also after uvicorn's own logging setup, and that it holds no question, reply, or Pi stderr. `tests/test_api_contract.py` raises each error with a marker string in its message, reply, and stderr, and checks that the marker appears in no response and no log record.
-
-### Sources
-
-`GET /api/sources/{id}` returns `{id, kind, title, url, attribution, visibility, approved_at}` from the `sources` table. The table holds approved sources only (`corpus/sources_table.py`), and the query also requires visibility `public` or `sanitized`, the retrieval filter. An unknown, candidate, in-review, or rejected source returns 404, with the same body in each case. `url` follows the citation rule. `revision`, `content_sha256`, and `approved_by` are internal and are not returned, and neither is any source or chunk text: a visitor sees text only as a citation's excerpt.
-
-### Frontend types
-
-`just types` writes the OpenAPI schema to a temporary file with `python -m profile_rag.api.openapi` (no server runs) and turns it into `frontend/src/api/schema.d.ts` with openapi-typescript 7.13.0. `AskResponse` becomes a TypeScript union of the three variants, each with a literal `status`, so a `switch` on `status` narrows it (`frontend/src/api/schema.test.ts`). `just types-check` runs openapi-typescript with `--check` and fails when the file is out of date; `just lint` runs it first. The file is generated, so oxfmt and oxlint skip it.
-
-openapi-typescript 7 builds its output with the TypeScript compiler API, and its peer range is `typescript ^5.x`. TypeScript 7, which the frontend uses, has no JavaScript API: with it, openapi-typescript fails at startup (`ts.factory` is undefined). `frontend/.pnpmfile.cjs` removes the peer dependency and gives openapi-typescript its own TypeScript 5.9.3. The frontend's `tsc` stays on 7 and type-checks the generated file.
-
-## Frontend
-
-The UI is one page (`frontend/src/App.tsx`): a question form, the result, and a server status line. It runs on React 19 and Vite, with no router, state library, or Markdown renderer.
-
-| File (under `frontend/src/`) | Does |
+| `error` | Raised by |
 | --- | --- |
-| `api/client.ts` | `ask(question, {mode, k, signal})` and `getSource(id)`. Returns a union and never throws. |
-| `components/AskForm.tsx` | The question box: label, 1000-character limit with a counter, trims the question, Enter submits, Shift+Enter adds a line, disabled and `aria-busy` while a question is in flight. |
-| `components/AnswerView.tsx` | Renders one `AskResult`. |
-| `components/EvidencePanel.tsx` | The numbered evidence list. |
-| `components/labels.ts` | Attribution labels, the `http(s)` URL check, and the evidence element ID. |
+| `retrieval_failed` | The search step: `EmbeddingError`, `ConnectionError` (Ollama unreachable), an `httpx` or Ollama error, or a psycopg or SQLAlchemy error |
+| `pi_timeout` | `PiTimeout` |
+| `pi_failed` | Any other `PiError` (`PiProcessError`, `PiProtocolError`, `PiModelError`) |
+| `bad_reply` | `OutputParserException`: the reply was not a valid answer |
+| `invented_citation` | `InventedCitation`: the reply cited a chunk it was not given |
+| `internal_error` | Any other exception: a bug |
 
-### Client results
-
-`ask` checks the response at run time before it returns it, because the generated types say what the backend promises, not what arrives (a proxy's HTML error page, an old server). The check looks at the HTTP status and the body's `status` field, and checks each field the variant has. It uses no `as` cast. The result is one of:
-
-| Result | When |
-| --- | --- |
-| `response` with `answered` or `unknown` | HTTP 200 and a body of that shape |
-| `response` with `failed` | HTTP 5xx and a `failed` body with a known error code |
-| `invalid` | HTTP 422; only each error's `msg` is kept, never the `input` FastAPI echoes back |
-| `client_error` | `network`, `aborted`, `not_json`, `bad_shape` (wrong shape, or `failed` on 200, or `answered` on 5xx), or `unexpected_status` |
-
-### States and rendering rules
-
-`AnswerView` switches on the result kind and then on `status`. Each switch ends in `const unreachable: never = ...`, so a new variant in `schema.d.ts` fails `just typecheck` until the UI renders it. The attribution and client-error label maps use `satisfies Record<...>` for the same reason.
-
-- **Answered**: the answer text, then one marker per citation, `[1]` to `[n]` in citation order. Each marker is a link to `#evidence-<chunk_id>`, which works without JavaScript; a click also moves focus to that evidence item (`tabIndex=-1`), so keyboard and screen-reader position follow. The model name from the response is shown in a small line under the answer.
-- **Unknown**: headed "Not in the evidence", in a neutral box, with the reason. It is a normal outcome, not an error, so it uses no error color.
-- **Failed**: the server's `message` and `request_id`. The error code is not shown.
-- **Invalid** and **client error**: their own headings ("The question was not accepted", "Connection problem"), with the HTTP status and request ID when there was a response.
-
-A visually hidden `role="status"` (`aria-live="polite"`) region announces one short line per result, such as "Answer ready, with 2 evidence items.", rather than the whole evidence list. While a question is in flight, the result region is `aria-busy` and a newer question aborts the older request.
-
-Model and corpus text is always rendered as React text children, which React escapes. The frontend has no `dangerouslySetInnerHTML` and no Markdown-to-HTML step, so Markdown in an excerpt shows as its literal characters. A source title becomes a link only when `safeHttpUrl` accepts the URL as `http:` or `https:`; the API already nulls other URLs, and the check is repeated in the browser. Links carry `rel="noopener noreferrer"`. Tests: `AnswerView.test.tsx` renders HTML in the answer, title, excerpt, and reason, and checks that no element is created; it also checks that `javascript:`, `data:`, `file:`, relative, and malformed URLs never become links.
-
-The styles (`styles.css`) follow the system light or dark setting, keep a visible focus outline, use 16-pixel text in the question box so iOS does not zoom, and avoid sideways scrolling at 375 pixels. The only motion is a 150 ms press scale on the button and a background fade on the targeted evidence item; `prefers-reduced-motion: reduce` turns both off, and `prefers-contrast: more` darkens muted text and borders.
-
-### Tests
-
-The unit tests (`just test-frontend`, Vitest in jsdom) stub `fetch`. `client.test.ts` covers each result kind and the shape checks; `AskForm.test.tsx`, `AnswerView.test.tsx`, and `App.test.tsx` cover each state, the loading state, the length limit, the markers, and the text-only rendering.
-
-The browser tests (`just e2e`, Playwright and Chromium; `just e2e-install` once) cover an answered question (a marker click focuses and shows its evidence item), an unknown question, a failed answer, and a 375-pixel layout without sideways scrolling, each at desktop size and at phone size.
-
-### Test-mode server
-
-The browser tests need a running API, but not Ollama, not Pi, and not the real database. `backend/tests/e2e_server.py` provides one. It builds the app with `create_app(e2e_lifespan)`; the production lifespan is the default and is unchanged. The test lifespan:
-
-- creates a throwaway `profile_rag_tmp_<hex>` database on the `TEST_DATABASE_URL` server (`conftest.temporary_database`) and drops it at shutdown;
-- migrates it, syncs `corpus-example/sources.yaml` into `sources`, and indexes `corpus-example/` with `DeterministicFakeEmbedding` (hash-based vectors of the model's size);
-- answers with `PiChatModel` running `backend/tests/e2e_fake_pi.py`, which speaks Pi's RPC protocol, reads the prompt, and replies `unknown` to a question that contains "salary", fails with exit code 3 on a question that contains `E2E-FAIL`, and otherwise answers with the first two chunk IDs of the prompt, so the citations always pass `check_citations`.
-
-Safeguards against running it by accident or on real data:
-
-- It lives in `backend/tests/`, which is not part of the installed package. The production app has no setting that selects fake embeddings or a fake Pi.
-- It exits unless `PROFILE_RAG_TEST_MODE=1` is set. Only `frontend/playwright.config.ts` sets it.
-- It exits unless the database name starts with `profile_rag_tmp_`, checked again before it writes, so it can never write to the main database or the shared test database.
-- It never uses `DATABASE_URL`, `PROFILE_RAG_PI_BIN`, or `PROFILE_RAG_PI_MODEL`, and it loads `corpus-example/` whatever `CORPUS_DIR` says. Importing `conftest` turns LangSmith tracing off, as in every test. It listens on 127.0.0.1 only.
-- Playwright starts its own servers on ports 8765 and 5174 with `reuseExistingServer: false`, so a test never reaches a development server on 8000 or 5173.
-
-`backend/tests/test_e2e_server.py` checks the two refusals and the fake Pi's choice of reply.
+`message` is a fixed sentence per code (`rag.FAILURES`), written for a visitor. It never contains the error's own text: an `OutputParserException` holds the whole model reply, and a `PiProcessError` holds Pi's stderr. `rag.ask` logs one warning per failure, with the request ID, the exception class name, and the code, and no traceback, message, or reply text. `tests/test_rag.py` raises each error with a marker string in its message and checks that the marker appears in no response and no log record. The Worker gives each code its HTTP status ([`DEPLOY.md`](DEPLOY.md)).
 
 ## Cloudflare Worker
 
@@ -508,10 +396,10 @@ The Worker's tests (`worker/test/`) run in the Workers runtime with Vitest and a
 
 ## Tracing
 
-`tracing.configure_tracing(settings, corpus_dir)` runs at startup: in the CLI's root callback, before any command, and in the API's `create_app`. Both run before any LangChain object is made.
+`tracing.configure_tracing(settings, corpus_dir)` runs at startup, in the CLI's root callback, before any command and before any LangChain object is made.
 
 - Off by default. Tracing is on only with `LANGSMITH_TRACING=true` (environment or `.env`). When it is off, `configure_tracing` turns langsmith's global switch off. The other names the library reads, `LANGSMITH_TRACING_V2` and `LANGCHAIN_TRACING_V2`, then cannot turn it on.
-- Example corpus only. With tracing on, startup fails with exit code 2 unless the corpus directory is this repository's `corpus-example/` (`CORPUS_DIR` from the environment; unset means `corpus/`) and `LANGSMITH_API_KEY` is set. `search`, `ask`, `agent`, `eval`, `compare-agent`, and the API also check that the model's table holds exactly the chunks of `corpus-example/`, because `CORPUS_DIR` alone says nothing about what was indexed.
+- Example corpus only. With tracing on, startup fails with exit code 2 unless the corpus directory is this repository's `corpus-example/` (`CORPUS_DIR` from the environment; unset means `corpus/`) and `LANGSMITH_API_KEY` is set. `search`, `ask`, `agent`, `eval`, and `compare-agent` also check that the model's table holds exactly the chunks of `corpus-example/`, because `CORPUS_DIR` alone says nothing about what was indexed.
 - Nothing but structure. With tracing on, it sets `LANGSMITH_HIDE_INPUTS=true` and `LANGSMITH_HIDE_OUTPUTS=true`. It installs a `langsmith.Client` with `hide_inputs`, `hide_outputs`, and `hide_metadata` set to True, `omit_traced_runtime_info=True`, and an anonymizer, `scrub_error`, that replaces a run's error with the exception class name. A trace then holds run names, types, timings, and error class names.
 - Tests never trace. `tests/conftest.py` sets `LANGSMITH_TRACING=false` (an environment variable ranks above `.env`), removes the LangSmith API key and endpoint variables, and turns the global switch off before and after every test. The rule: a test run never traces, whatever the parent environment says. `tests/test_tracing.py` blocks every socket and gives the client a session that records requests instead of sending them.
 

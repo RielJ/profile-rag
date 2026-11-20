@@ -1,7 +1,7 @@
 """Tests for vectorstore/embedders.py, and the demo check that uses the same split.
 
 Every service is faked: the tests record which module's function was
-called, so no Ollama, fastembed weights, or Cloudflare are needed.
+called, so no Ollama or Cloudflare is needed.
 """
 
 import pytest
@@ -10,12 +10,7 @@ from pydantic import SecretStr
 
 from profile_rag import demo_check
 from profile_rag.settings import Settings
-from profile_rag.vectorstore import (
-    embedders,
-    fastembed_embeddings,
-    ollama_embeddings,
-    workers_ai_embeddings,
-)
+from profile_rag.vectorstore import embedders, ollama_embeddings, workers_ai_embeddings
 from profile_rag.vectorstore.models import BGE_M3, NOMIC_V15, EmbeddingModel
 
 SECRET = "cf-token-in-test"
@@ -44,7 +39,6 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     called: list[str] = []
     for name, module in [
         ("ollama", ollama_embeddings),
-        ("fastembed", fastembed_embeddings),
         ("workers_ai", workers_ai_embeddings),
     ]:
 
@@ -61,27 +55,16 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return called
 
 
-@pytest.mark.parametrize("local", ["ollama", "fastembed"])
-def test_a_workers_ai_model_always_goes_to_workers_ai(
-    calls: list[str], local: embedders.LocalEmbedder
-) -> None:
-    assert embedders.model_problem(BGE_M3, settings(), local=local) == "workers_ai"
-    embedders.for_model(BGE_M3, settings(), local=local)
+def test_a_workers_ai_model_goes_to_workers_ai(calls: list[str]) -> None:
+    assert embedders.model_problem(BGE_M3, settings()) == "workers_ai"
+    embedders.for_model(BGE_M3, settings())
     assert calls == ["workers_ai.model_problem", "workers_ai.for_model"]
 
 
-@pytest.mark.parametrize("local", ["ollama", "fastembed"])
-def test_an_ollama_model_goes_to_the_local_embedder(
-    calls: list[str], local: embedders.LocalEmbedder
-) -> None:
-    assert embedders.model_problem(NOMIC_V15, settings(), local=local) == local
-    embedders.for_model(NOMIC_V15, settings(), local=local)
-    assert calls == [f"{local}.model_problem", f"{local}.for_model"]
-
-
-def test_the_cli_default_is_ollama(calls: list[str]) -> None:
-    embedders.model_problem(NOMIC_V15, settings())
-    assert calls == ["ollama.model_problem"]
+def test_an_ollama_model_goes_to_ollama(calls: list[str]) -> None:
+    assert embedders.model_problem(NOMIC_V15, settings()) == "ollama"
+    embedders.for_model(NOMIC_V15, settings())
+    assert calls == ["ollama.model_problem", "ollama.for_model"]
 
 
 def test_the_credentials_come_from_the_settings() -> None:

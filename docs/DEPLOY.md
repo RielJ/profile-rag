@@ -1,6 +1,6 @@
 # Deploy the API
 
-This guide puts the profile-rag API on the internet for free, so a website (here, the portfolio's hero terminal) can send it questions. The public API is the Cloudflare Worker in `worker/`, written in TypeScript. The Python backend stays on your machine: it indexes the corpus, runs the evaluation, and serves the local React page in `frontend/`, which is not deployed.
+This guide puts the profile-rag API on the internet for free, so a website (here, the portfolio's hero terminal) can send it questions. The API is the Cloudflare Worker in `worker/`, written in TypeScript. The Python backend has no server: it stays on your machine, indexes the corpus, runs the evaluation, and answers from the command line (`profile-rag ask`).
 
 | Part | Service | Free limits that matter |
 | --- | --- | --- |
@@ -11,7 +11,7 @@ This guide puts the profile-rag API on the internet for free, so a website (here
 | Question limits | One Durable Object with SQLite storage | Far above what the limits let through |
 | Postgres with pgvector | Neon Free | 1 GB storage and 100 compute hours a month per project. Suspends after 5 minutes idle and wakes in under a second |
 
-The deployed API differs from the local one in three ways:
+The Worker differs from the local `profile-rag ask` in three ways:
 
 - **Answers come from `gpt-oss-120b` on Workers AI, not Pi.** Pi uses your own logins, so it cannot run on a public server. If Workers AI fails before the answer starts, and `GROQ_API_KEY` is set, Groq answers instead.
 - **Search uses `bge-m3` embeddings**, in the `chunks_bge_m3` table, because Workers AI does not offer `nomic-embed-text`. The evaluation in `docs/eval/dev-comparison.md` checked that `bge-m3` retrieves as well, and `just worker-parity` checks that the Worker's search returns the same chunks as Python's.
@@ -21,7 +21,7 @@ The Worker holds code only. The corpus never goes into it: the chunks and vector
 
 ## Before you start
 
-You need a working local setup (`just demo corpus` answers questions over your corpus) and these accounts, none of which asks for a card:
+You need a working local setup (after `just demo corpus`, `profile-rag ask` answers questions over your corpus) and these accounts, none of which asks for a card:
 
 - [Cloudflare](https://dash.cloudflare.com/sign-up) for the Worker, Workers AI, and KV.
 - [Neon](https://neon.tech) for Postgres.
@@ -103,7 +103,7 @@ curl -N -X POST https://profile-rag-api.<your-subdomain>.workers.dev/api/ask/str
   -d '{"question":"What projects has Riel built?"}'
 ```
 
-The answer is a server-sent event stream: the model's events as Workers AI sends them, then a final `event: result` whose data is the checked answer, the same JSON as the local API's `POST /api/ask`. A cached answer is the `result` event alone, with `"cached": true`.
+The answer is a server-sent event stream: the model's events as Workers AI sends them, then a final `event: result` whose data is the checked answer: the same JSON that `rag.to_response` builds in the Python code (`backend/src/profile_rag/answers.py` defines its shape). A cached answer is the `result` event alone, with `"cached": true`.
 
 | Status | Meaning |
 | --- | --- |

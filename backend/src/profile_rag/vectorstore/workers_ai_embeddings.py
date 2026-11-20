@@ -1,7 +1,7 @@
 """Embeddings from Cloudflare Workers AI, through its REST API.
 
 The deployed API runs on a Cloudflare Worker, which can call Workers AI but
-neither Ollama nor fastembed. A model the Worker uses must therefore be
+not Ollama. A model the Worker uses must therefore be
 indexed with the same Workers AI model (models.py, `workers_ai_name`). This
 module is the indexer's side, and the CLI's for `search` and `eval`.
 

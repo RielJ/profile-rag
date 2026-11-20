@@ -5,7 +5,6 @@ parameter name. `scope="session"` builds it once for the whole test run.
 """
 
 import asyncio
-import logging
 import os
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -16,18 +15,13 @@ from uuid import uuid4
 import langsmith
 import psycopg
 import pytest
-from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_postgres import PGEngine
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
-from psycopg_pool import PoolTimeout
 from sqlalchemy.engine import make_url
 
-from profile_rag.api.app import create_app
-from profile_rag.api.deps import get_pool
-from profile_rag.db.pool import Pool, create_pool
 from profile_rag.settings import get_settings
 from profile_rag.tracing import TRACING_SWITCHES
 from profile_rag.vectorstore import store
@@ -59,9 +53,6 @@ def tracing_stays_off() -> Iterator[None]:
     yield
     _tracing_off()
 
-
-# Port 9 ("discard") has no database listening, so connections fail fast.
-UNREACHABLE_DSN = "postgresql://nobody:nothing@127.0.0.1:9/none"
 
 # Prefix of throwaway databases. If a test run is killed before cleanup, find
 # leftovers with `\l profile_rag_tmp_*` in `just psql-test` and drop them.
@@ -114,8 +105,8 @@ def pytest_runtest_makereport(
 ) -> Generator[None, object]:
     """Show only this project's frames in failure tracebacks.
 
-    A failure through FastAPI's test client otherwise prints ~80 lines of
-    Starlette and anyio frames. The exception line itself is kept. Run
+    A failure deep in a library (LangChain, SQLAlchemy, psycopg) otherwise
+    prints many lines of its frames. The exception line itself is kept. Run
     `pytest --full-trace` to see every frame.
     """
     excinfo = call.excinfo
@@ -184,53 +175,6 @@ def url_of() -> Callable[[str], str]:
 def empty_database_url(empty_database: str) -> str:
     """URL of an empty throwaway database, dropped after the test."""
     return as_url(empty_database)
-
-
-@pytest.fixture(scope="session")
-def test_pool() -> Iterator[Pool]:
-    """A pool connected to the test database (profile_rag_test)."""
-    pool = create_pool(_test_database_url())
-    try:
-        pool.wait(timeout=5)
-    except PoolTimeout:
-        pool.close()
-        pytest.fail("Cannot reach the test database. Run `just db-up` first.")
-    yield pool
-    pool.close()
-
-
-@pytest.fixture
-def unreachable_pool(caplog: pytest.LogCaptureFixture) -> Iterator[Pool]:
-    """An open pool pointing at an address where no database listens."""
-    # The pool logs a WARNING on every failed reconnect. Here failure is the
-    # point, so those lines are noise in test reports. caplog restores the
-    # level after the test.
-    caplog.set_level(logging.ERROR, logger="psycopg.pool")
-    pool = create_pool(UNREACHABLE_DSN)
-    yield pool
-    pool.close()
-
-
-@pytest.fixture
-def closed_pool() -> Pool:
-    """A pool that was never opened, like one after application shutdown."""
-    return create_pool(UNREACHABLE_DSN, open_now=False)
-
-
-@pytest.fixture
-def make_client() -> Callable[[Pool], TestClient]:
-    """Build an API test client whose routes receive the given pool.
-
-    The client is not used as a context manager, so the application's
-    lifespan (which connects to the real database) does not run.
-    """
-
-    def build(pool: Pool) -> TestClient:
-        app = create_app()
-        app.dependency_overrides[get_pool] = lambda: pool
-        return TestClient(app)
-
-    return build
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

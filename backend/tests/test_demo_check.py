@@ -16,7 +16,7 @@ from profile_rag.vectorstore import ollama_embeddings
 from profile_rag.vectorstore.models import NOMIC_V15
 
 EXAMPLE = REPO_ROOT / "corpus-example"
-PORTS = Ports(db=5443, api=8000, frontend=5173, db_running=True)
+PORTS = Ports(db=5443, db_running=True)
 
 
 def settings(**values: str) -> Settings:
@@ -59,13 +59,13 @@ def test_every_missing_prerequisite_is_reported_at_once(tmp_path: Path) -> None:
         settings(database_url="postgresql://u:p@127.0.0.1:5432/db", PROFILE_RAG_PI_BIN="no-pi-x"),
         NOMIC_V15,
         tmp_path,
-        PORTS,
-        in_use=lambda port: port == 8000,
+        Ports(db=5443, db_running=False),
+        in_use=lambda port: port == 5443,
         list_digests=ollama_down,
     )
     assert len(problems) == 5, problems
     assert "DATABASE_URL in .env uses port 5432" in problems[0]
-    assert "Port 8000 (the API) is in use" in problems[1]
+    assert "Port 5443 (the database) is in use" in problems[1]
     assert "Ollama does not answer" in problems[2]
     assert "Pi ('no-pi-x') is not on PATH" in problems[3]
     assert "sources.yaml does not exist" in problems[4]
@@ -89,7 +89,7 @@ def test_a_different_digest_is_reported() -> None:
 
 def test_the_database_port_may_be_held_by_the_projects_own_container() -> None:
     assert check_ports(PORTS, in_use=lambda _port: _port == 5443) == []
-    taken = Ports(db=5443, api=8000, frontend=5173, db_running=False)
+    taken = Ports(db=5443, db_running=False)
     problems = check_ports(taken, in_use=lambda _port: _port == 5443)
     assert len(problems) == 1
     assert "Set DB_PORT in .env" in problems[0]
@@ -138,7 +138,6 @@ def test_main_prints_problems_and_exits_1(
     monkeypatch.setattr(demo_check, "port_in_use", no_port_in_use)
     monkeypatch.setattr(ollama_embeddings, "ollama_digests", ollama_down)
     args = ["--model", "nomic-v15", "--root", str(tmp_path)]
-    ports = ["--db-port", "5443", "--api-port", "8000", "--frontend-port", "5173"]
-    code = demo_check.main([*args, *ports, "--db-running"])
+    code = demo_check.main([*args, "--db-port", "5443", "--db-running"])
     assert code == 1
     assert "sources.yaml does not exist" in capsys.readouterr().err

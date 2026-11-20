@@ -10,6 +10,7 @@ from fake_pi import FAKE_PI, accepted, reply_steps, write_script
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from profile_rag import rag
 from profile_rag.generation.pi_chat_model import PiChatModel, join_messages
 from profile_rag.generation.pi_rpc import PiConfig, PiProcessError, PiTimeout
 
@@ -77,3 +78,8 @@ def test_reply_text_reaches_callbacks_as_tokens_while_pi_writes(tmp_path: Path) 
 
     assert tokens.tokens == ["the ", "reply"]
     assert result.text == "the reply"
+
+
+def test_pi_errors_keep_their_failure_codes() -> None:
+    assert rag.failure_code(PiTimeout(1.0)) == "pi_timeout"
+    assert rag.failure_code(PiProcessError("x", returncode=1, stderr_tail="")) == "pi_failed"

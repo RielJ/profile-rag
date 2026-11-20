@@ -1,8 +1,8 @@
-"""Answer one API question with the grounded answer chain.
+"""Answer one question with the grounded answer chain.
 
 `ask(question, chain, request_id=...)` runs the chain from
-generation/chain.py and maps its result to the API's `AskResponse`
-(api/models.py). It adds no answer logic of its own:
+generation/chain.py and maps its result to an `AskResponse` (answers.py).
+It adds no answer logic of its own:
 
 - `Answered` becomes `AnsweredResponse`, with one `Citation` per cited
   chunk, taken from the chunk's metadata. The excerpt starts after the
@@ -20,20 +20,14 @@ generation/chain.py and maps its result to the API's `AskResponse`
 callback, reads it, so the chain does not change. It is None when no model
 ran or the model reported none.
 
-Streaming. With `on_draft`, `ask` also passes on the answer (or reason) as
-the model writes it, one new piece of text per call (`DraftText`). The
-pieces are an unchecked draft: the returned `AskResponse` is the only result
-to trust, and it can still be `unknown` or `failed`. To abandon the
-question, for example because the client left, `on_draft` raises `Abandoned`:
-the model call stops and `ask` raises `Abandoned` instead of returning. Any
-other exception from `on_draft` also stops the call and is a bug
-(`internal_error`).
+`to_response`, `FAILURES`, and `EXCERPT_CHARS` are the reference the
+Worker is checked against: scripts/export_contract.py writes them to
+worker/src/generated/backend-contract.json.
 
-`ChainCache` builds one chain per (mode, k) and keeps it. The API makes one
-at startup (api/search.py); tests make one from a fake retriever and a fake
-chat model.
+`ChainCache` builds one chain per (mode, k) and keeps it; tests make one
+from a fake retriever and a fake chat model.
 
-Tests: backend/tests/test_api_contract.py.
+Tests: backend/tests/test_rag.py.
 """
 
 import logging
@@ -53,7 +47,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.outputs import ChatGeneration, LLMResult
 from langchain_core.runnables import Runnable
 
-from profile_rag.api.models import (
+from profile_rag.answers import (
     AnsweredResponse,
     AskResponse,
     Citation,
@@ -62,7 +56,7 @@ from profile_rag.api.models import (
     UnknownResponse,
 )
 from profile_rag.corpus.splitting import HEADING_SEPARATOR, heading_line
-from profile_rag.generation.answer import InventedCitation, Unknown, draft_text
+from profile_rag.generation.answer import InventedCitation, Unknown
 from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.errors import ModelError, ModelTimeout
 from profile_rag.retrievers.factory import SearchMode
@@ -114,37 +108,6 @@ class ModelName(BaseCallbackHandler):
                         self.value = name
 
 
-class Abandoned(Exception):
-    """Raised by an `on_draft` callback to stop a question nobody waits for."""
-
-
-class DraftText(BaseCallbackHandler):
-    """Passes each new piece of the reply's answer or reason to `on_draft`.
-
-    The reply is JSON (generation/answer.py), so the raw tokens are not shown:
-    `draft_text` reads the text field out of the reply so far, and only text
-    that extends what was already sent goes out. A draft that briefly shrinks,
-    as it can inside an escape sequence, sends nothing until it grows again.
-    """
-
-    raise_error = True  # an exception from on_draft must stop the model call
-
-    def __init__(self, on_draft: Callable[[str], None]) -> None:
-        self.on_draft = on_draft
-        self.reply = ""
-        self.sent = ""
-
-    @override
-    def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
-        if not isinstance(token, str):
-            return
-        self.reply += token
-        draft = draft_text(self.reply)
-        if len(draft) > len(self.sent) and draft.startswith(self.sent):
-            self.on_draft(draft[len(self.sent) :])
-            self.sent = draft
-
-
 def failure_code(error: Exception) -> FailedCode:
     """The `FailedCode` of an error the chain raised."""
     if isinstance(error, ModelTimeout):
@@ -165,24 +128,16 @@ def ask(
     chain: AnswerChain,
     *,
     request_id: str,
-    on_draft: Callable[[str], None] | None = None,
 ) -> AskResponse:
     """Run `chain` on `question` and return its result as an `AskResponse`.
 
     Never raises for an error of the chain: it returns a `FailedResponse`
     and logs one line with the exception class and `request_id`.
-    `on_draft`, if given, receives the draft text while the model writes.
-    Raises `Abandoned` if `on_draft` raised it.
     """
     model = ModelName()
-    callbacks: list[BaseCallbackHandler] = [model]
-    if on_draft is not None:
-        callbacks.append(DraftText(on_draft))
     try:
-        result = chain.invoke({"question": question}, {"callbacks": callbacks})
+        result = chain.invoke({"question": question}, {"callbacks": [model]})
         return to_response(result, model.value)
-    except Abandoned:
-        raise
     except Exception as error:
         code = failure_code(error)
         # The class name only: str(error) can hold the model's reply or Pi's stderr.

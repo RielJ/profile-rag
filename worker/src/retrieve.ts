@@ -46,6 +46,26 @@ if (SEARCH.table !== TABLE || SEARCH.embedding_model !== EMBEDDING_MODEL) {
 }
 
 /**
+ * The keyword half, shared by both statements so it cannot drift: the
+ * question parsed into an OR of quoted lexemes, then the best matches.
+ * The placeholders are arguments because the statements number their
+ * parameters differently.
+ */
+const queryCte = (question: string, config: string) => String.raw`query AS (
+  SELECT string_agg('''' || replace(replace(lexeme, '\', '\\'), '''', '''''') || '''', ' | ' ORDER BY lexeme)::tsquery AS q
+  FROM unnest(tsvector_to_array(to_tsvector(${config}::regconfig, ${question}::text))) AS lexeme
+)`;
+
+const keywordCte = (visible: string, candidates: string) => String.raw`keyword AS (
+  SELECT 'keyword' AS list, chunk_id, source_id, attribution, content, langchain_metadata AS metadata,
+         -ts_rank_cd(content_tsv, query.q) AS order_key
+  FROM chunks_bge_m3, query
+  WHERE content_tsv @@ query.q AND visibility = ANY(${visible}::text[])
+  ORDER BY ts_rank_cd(content_tsv, query.q) DESC, chunk_id
+  LIMIT ${candidates}
+)`;
+
+/**
  * The search statement. Parameters: $1 the question's vector as pgvector
  * text, $2 the question, $3 the text search configuration, $4 the visible
  * values, $5 the candidates per half.
@@ -55,10 +75,7 @@ if (SEARCH.table !== TABLE || SEARCH.embedding_model !== EMBEDDING_MODEL) {
  * within each list. Keyword ties go by `chunk_id`, as in Python.
  */
 export const HYBRID_SQL = String.raw`
-WITH query AS (
-  SELECT string_agg('''' || replace(replace(lexeme, '\', '\\'), '''', '''''') || '''', ' | ' ORDER BY lexeme)::tsquery AS q
-  FROM unnest(tsvector_to_array(to_tsvector($3::regconfig, $2::text))) AS lexeme
-),
+WITH ${queryCte("$2", "$3")},
 dense AS (
   SELECT 'dense' AS list, chunk_id, source_id, attribution, content, langchain_metadata AS metadata,
          embedding <=> $1::vector AS order_key
@@ -67,18 +84,24 @@ dense AS (
   ORDER BY embedding <=> $1::vector
   LIMIT $5
 ),
-keyword AS (
-  SELECT 'keyword' AS list, chunk_id, source_id, attribution, content, langchain_metadata AS metadata,
-         -ts_rank_cd(content_tsv, query.q) AS order_key
-  FROM chunks_bge_m3, query
-  WHERE content_tsv @@ query.q AND visibility = ANY($4::text[])
-  ORDER BY ts_rank_cd(content_tsv, query.q) DESC, chunk_id
-  LIMIT $5
-)
+${keywordCte("$4", "$5")}
 SELECT * FROM dense
 UNION ALL
 SELECT * FROM keyword
 ORDER BY list, order_key, chunk_id`;
+
+/**
+ * Keyword search alone, for when the question cannot be embedded (Workers AI
+ * down or out of its daily quota). It needs no AI call, so the answer model
+ * (Groq, when Workers AI is out) still gets evidence. Parameters: $1 the
+ * question, $2 the text search configuration, $3 the visible values, $4 the
+ * candidates.
+ */
+export const KEYWORD_SQL = String.raw`
+WITH ${queryCte("$1", "$2")},
+${keywordCte("$3", "$4")}
+SELECT * FROM keyword
+ORDER BY order_key, chunk_id`;
 
 /** Runs a parameterized statement and returns its rows (Neon's `sql.query`, or `pg` in scripts). */
 export type Query = (text: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -108,6 +131,8 @@ export interface RetrieveOptions {
   embed: Embed;
   question: string;
   k?: number;
+  /** Called with the embedding error when the search falls back to keywords alone. */
+  onFallback?: (error: unknown) => void;
 }
 
 /** At most `k` visible chunks for `question`, best fused score first. */
@@ -116,10 +141,17 @@ export async function retrieve({
   embed,
   question,
   k = SEARCH.k,
+  onFallback = () => {},
 }: RetrieveOptions): Promise<Chunk[]> {
+  let vector: number[];
+  try {
+    vector = await embed(question);
+  } catch (error) {
+    onFallback(error);
+    return keywordOnly(query, question, k);
+  }
   let rows: Record<string, unknown>[];
   try {
-    const vector = await embed(question);
     rows = await query(HYBRID_SQL, [
       `[${vector.join(",")}]`,
       question,
@@ -135,6 +167,21 @@ export async function retrieve({
   const keyword: Chunk[] = [];
   for (const row of rows) (row["list"] === "dense" ? dense : keyword).push(chunkOf(row));
   return reciprocalRankFusion([dense, keyword], k);
+}
+
+async function keywordOnly(query: Query, question: string, k: number): Promise<Chunk[]> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await query(KEYWORD_SQL, [
+      question,
+      SEARCH.ts_config,
+      SEARCH.visible,
+      SEARCH.candidates,
+    ]);
+  } catch (error) {
+    throw new RetrievalError("search failed", { cause: error });
+  }
+  return rows.slice(0, k).map(chunkOf);
 }
 
 /**

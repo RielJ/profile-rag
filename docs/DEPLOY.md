@@ -113,7 +113,7 @@ The answer is a server-sent event stream: the model's events as Workers AI sends
 | 429 | Over a question limit (`rate_limited`). The counts reset each clock hour and each UTC day |
 | 500 | The limit check failed (`internal_error`). The Worker refuses rather than answer without counting |
 | 502 | Workers AI failed before the answer started, and so did Groq if `GROQ_API_KEY` is set (`pi_failed`). The error code names stay `pi_*` for every backend |
-| 503 | Neon or the embedding cannot be reached (`retrieval_failed`) |
+| 503 | Neon cannot be reached (`retrieval_failed`). If only the embedding fails, the Worker searches by keyword alone and still answers |
 
 ## 5. Connect the website
 
@@ -141,7 +141,8 @@ The Worker's logs are in the Cloudflare dashboard under **Workers & Pages → pr
 Check two things now and then:
 
 - **Requests stopped for CPU.** On the Free plan a request gets 10 ms of CPU. Forwarding the model's stream untouched uses 3 to 15 ms, and an answer is capped at 800 tokens, so most requests stay under the limit and the rest have so far been let through. A stopped request shows the outcome `exceededCpu` in the logs. If that happens often, move to Workers Paid ($5 a month) and set a spending limit.
-- **Workers AI quota.** The dashboard's **AI → Workers AI** page shows neurons used today. If the quota runs out most days, set `GROQ_API_KEY` or lower `QUESTIONS_PER_DAY`.
+- **Workers AI quota.** The dashboard's **AI → Workers AI** page shows neurons used today. If the quota runs out most days, set `GROQ_API_KEY` or lower `QUESTIONS_PER_DAY`. With a Groq key, a used-up quota still gets answers: the question is searched by keyword alone (logged as `retrieval_fallback`) and Groq writes the answer (logged as `model_fallback`). Such keyword-only answers are not cached.
+- **Suggested questions.** An hourly cron trigger keeps the portfolio's six suggested questions cached, answering at most one per run (logged as `warm`; a run with nothing to do logs no `question`). After a deploy that changes `CORPUS_VERSION`, they are all cached again within six hours. If the chips change in the portfolio, update `WARM_QUESTIONS` in `worker/src/warm.ts`.
 
 ## Limits of this setup
 

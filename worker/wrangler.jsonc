@@ -9,6 +9,8 @@
   "workers_dev": true,
   "observability": { "enabled": true },
   "ai": { "binding": "AI" },
+  // Hourly: keep the portfolio's suggested questions cached, one per run (src/warm.ts).
+  "triggers": { "crons": ["23 * * * *"] },
   // The answer cache (src/cache.ts). Wrangler creates the namespace on the
   // first deploy and writes its id here.
   "kv_namespaces": [{ "binding": "ANSWERS" }],

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Chunk } from "../src/chunk";
 import {
   HYBRID_SQL,
+  KEYWORD_SQL,
   RetrievalError,
   SEARCH,
   chunkOf,
@@ -55,6 +56,20 @@ describe("the search settings", () => {
   it("put no value into the SQL text", () => {
     expect(HYBRID_SQL).not.toMatch(/'public'|'sanitized'|LIMIT \d/u);
     for (const n of [1, 2, 3, 4, 5]) expect(HYBRID_SQL).toContain(`$${n}`);
+    expect(KEYWORD_SQL).not.toMatch(/'public'|'sanitized'|LIMIT \d/u);
+    for (const n of [1, 2, 3, 4]) expect(KEYWORD_SQL).toContain(`$${n}`);
+    expect(KEYWORD_SQL).not.toContain("$5");
+  });
+
+  it("keep the keyword search the same in both statements", () => {
+    // KEYWORD_SQL takes the question as $1; HYBRID_SQL takes it as $2.
+    const shifted = KEYWORD_SQL.replace(/\$(\d)/gu, (_: string, n: string) => `$${Number(n) + 1}`);
+    const keywordPart = (sql: string) =>
+      sql.slice(sql.indexOf("keyword AS ("), sql.indexOf("\n)", sql.indexOf("keyword AS (")));
+    const queryPart = (sql: string) =>
+      sql.slice(sql.indexOf("query AS ("), sql.indexOf("\n)", sql.indexOf("query AS (")));
+    expect(keywordPart(shifted)).toBe(keywordPart(HYBRID_SQL));
+    expect(queryPart(shifted)).toBe(queryPart(HYBRID_SQL));
   });
 });
 
@@ -167,13 +182,61 @@ describe("retrieve", () => {
     expect((error as Error).message).not.toContain("secret");
   });
 
-  it("wraps an embedding error as a RetrievalError", async () => {
-    const failing = async (): Promise<number[]> => {
-      throw new Error("AI quota");
+  const failingEmbed = async (): Promise<number[]> => {
+    throw new Error("AI quota");
+  };
+
+  it("searches by keyword alone when the embedding fails", async () => {
+    const calls: unknown[][] = [];
+    const query: Query = async (text, params) => {
+      calls.push([text, params]);
+      return [row("keyword", "c"), row("keyword", "a")];
     };
-    await expect(
-      retrieve({ query: async () => [], embed: failing, question: "q" }),
-    ).rejects.toThrow(RetrievalError);
+    const fallbacks: unknown[] = [];
+    const found = await retrieve({
+      query,
+      embed: failingEmbed,
+      question: "What did he build?",
+      onFallback: (error) => fallbacks.push(error),
+    });
+    expect(ids(found)).toEqual(["c", "a"]);
+    expect(calls).toEqual([
+      [KEYWORD_SQL, ["What did he build?", "pg_catalog.english", ["public", "sanitized"], 20]],
+    ]);
+    expect(fallbacks).toHaveLength(1);
+    expect(String(fallbacks[0])).toContain("AI quota");
+  });
+
+  it("keeps at most k chunks from the keyword search", async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => row("keyword", `k${i}`));
+    const found = await retrieve({
+      query: async () => rows,
+      embed: failingEmbed,
+      question: "q",
+      k: 3,
+    });
+    expect(ids(found)).toEqual(["k0", "k1", "k2"]);
+  });
+
+  it("does not fall back when the database fails after embedding", async () => {
+    let calls = 0;
+    const query: Query = async () => {
+      calls += 1;
+      throw new Error("connection refused");
+    };
+    await expect(retrieve({ query, embed, question: "q" })).rejects.toThrow(RetrievalError);
+    expect(calls).toBe(1);
+  });
+
+  it("throws a RetrievalError when the embedding and the keyword search both fail", async () => {
+    const query: Query = async () => {
+      throw new Error("connection refused: postgres://user:secret@host");
+    };
+    const error = await retrieve({ query, embed: failingEmbed, question: "q" }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(RetrievalError);
+    expect((error as Error).message).not.toContain("secret");
   });
 });
 

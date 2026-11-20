@@ -1,9 +1,16 @@
+import {
+  createExecutionContext,
+  createScheduledController,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { cacheKey, questionCacheKey } from "../src/cache";
 import { WORKERS_AI_MODEL } from "../src/model";
+import worker from "../src/index";
 import { resultEvent } from "../src/stream";
+import { WARM_QUESTIONS } from "../src/warm";
 
 const BASE = "https://api.example";
 
@@ -113,5 +120,50 @@ describe("POST /api/ask/stream cache and limits", () => {
     expect(refused.status).toBe(429);
     expect(await refused.json()).toMatchObject({ status: "failed", error: "rate_limited" });
     expect((await post("one more", "203.0.113.3")).status).toBe(503);
+  });
+});
+
+describe("the hourly cron", () => {
+  it("asks nothing when every suggested question is cached", async () => {
+    const stored = { status: "unknown", reason: "not covered", model: WORKERS_AI_MODEL } as const;
+    for (const question of WARM_QUESTIONS) {
+      await env.ANSWERS.put(await questionCacheKey(question, env), JSON.stringify(stored));
+    }
+    const logged: string[] = [];
+    const log = console.log;
+    console.log = (line: string) => logged.push(line);
+    try {
+      const ctx = createExecutionContext();
+      await worker.scheduled(createScheduledController(), env, ctx);
+      await waitOnExecutionContext(ctx);
+    } finally {
+      console.log = log;
+    }
+    expect(logged.map((line) => JSON.parse(line))).toEqual([
+      { event: "warm", request_id: expect.stringMatching(/^[0-9a-f]{32}$/) },
+    ]);
+  });
+
+  it("asks the first uncached question and caches nothing when the answer fails", async () => {
+    const [first] = WARM_QUESTIONS;
+    const key = await questionCacheKey(first!, env);
+    await env.ANSWERS.delete(key);
+    const logged: string[] = [];
+    const log = console.log;
+    console.log = (line: string) => logged.push(line);
+    try {
+      const ctx = createExecutionContext();
+      await worker.scheduled(createScheduledController(), env, ctx);
+      await waitOnExecutionContext(ctx);
+    } finally {
+      console.log = log;
+    }
+    // Tests have no AI or database, so the answer fails and is not cached.
+    expect(logged.map((line) => JSON.parse(line)).at(-1)).toMatchObject({
+      event: "warm",
+      question: first,
+      status: 503,
+    });
+    expect(await env.ANSWERS.get(key)).toBeNull();
   });
 });

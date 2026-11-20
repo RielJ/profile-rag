@@ -66,7 +66,9 @@ All paths are under `backend/src/profile_rag/`.
 | `corpus/documents.py` | Loads each approved snapshot as a `Document`, after it checks the file hash. |
 | `corpus/splitting.py` | Splits documents at headings, then by size in words. Starts each chunk's text with its heading path. Gives each chunk a stable `chunk_id`. |
 | `corpus/sources_table.py` | Keeps the `sources` table equal to the approved registry entries. |
-| `vectorstore/models.py` | The embedding models: Ollama tag, digest, dimensions, table name, and prefixes. |
+| `vectorstore/models.py` | The embedding models: an `OllamaModel` (Ollama tag, digest) or a `WorkersAIModel` (Workers AI model name), each with dimensions, table name, and prefixes. `bge-m3` is the Workers AI model the Cloudflare Worker searches with; the module says why `bge-base-en-v1.5` and `embeddinggemma-300m` are not offered (they truncate long text silently). |
+| `vectorstore/embedders.py` | Picks the embeddings client for a model by its class: Ollama, fastembed, or Workers AI. The CLI, the API and `just demo` use it. |
+| `vectorstore/workers_ai_embeddings.py` | The Workers AI REST client (`POST /accounts/{id}/ai/run/{model}`, batches of 100). Every failure, including bge-m3's HTTP 400 for a text over 8,192 tokens, raises `WorkersAIError`, so `index` stops rather than skipping a chunk. Errors carry the status and Cloudflare's error codes, never the token. Settings: `PROFILE_RAG_CF_ACCOUNT_ID`, `PROFILE_RAG_CF_API_TOKEN`. |
 | `vectorstore/ollama_embeddings.py` | The Ollama side of a model: `model_problem` says whether Ollama has the tag with the expected digest and how to fix it, and `for_model` builds its prefixed embeddings. The CLI, the API and `just demo` all use it. |
 | `vectorstore/prefixed.py` | `PrefixedEmbeddings`: adds the model's document or query prefix and checks every vector. |
 | `vectorstore/store.py` | Creates a model's chunk table and opens it for indexing or for search. `connected(url)` and `searching(url, model, embeddings)` are context managers that close the engine when the block ends, also on an error; the CLI commands use them. |
@@ -486,6 +488,23 @@ Safeguards against running it by accident or on real data:
 - Playwright starts its own servers on ports 8765 and 5174 with `reuseExistingServer: false`, so a test never reaches a development server on 8000 or 5173.
 
 `backend/tests/test_e2e_server.py` checks the two refusals and the fake Pi's choice of reply.
+
+## Cloudflare Worker
+
+The deployed API is `worker/`, a Cloudflare Worker in TypeScript that serves `POST /api/ask/stream` and `GET /api/health` (`docs/DEPLOY.md`). It is a port of the backend's ask path, not a second design: the same prompt, the same answer and citation checks, the same response JSON, and the same failure codes. The Python backend still indexes the corpus, into Neon's `chunks_bge_m3`, and runs the evaluation.
+
+A question goes through these steps, in order. Each step that can refuse runs before anything that costs more:
+
+1. The access key (`access.ts`). A wrong or missing `X-Access-Key` gets 401.
+2. The answer cache (`cache.ts`). The key is a SHA-256 of `CACHE_VERSION`, `CORPUS_VERSION`, the model, and the normalized question. A hit returns the stored result as the only event, marked `"cached": true`, and skips every later step.
+3. The question limits (`limits.ts`). One Durable Object, `QuestionLimiter`, counts fresh questions per visitor per clock hour and for everyone per UTC day, in SQLite. A visitor is a hash of the proxy's `X-Visitor-IP`. Over a limit gets 429; a failed check gets 500, so a broken limiter never lets questions through uncounted.
+4. Search (`retrieve.ts`). One Workers AI call embeds the question with `bge-m3`, and one SQL query over Neon's HTTP driver runs dense and keyword search and fuses them by rank, as `retrievers/hybrid.py` does.
+5. The model (`model.ts`). `gpt-oss-120b` on Workers AI, with `max_tokens` 800. If it fails before its stream starts and `GROQ_API_KEY` is set, Groq runs the same model.
+6. The stream (`stream.ts`). The model's server-sent events go to the client untouched, so the Worker's CPU time stays small (3 to 15 ms an answer, against the Free plan's 10 ms limit). A copy of the stream is read in the background, and the answer is checked (`answer.ts`, `citations.ts`) and sent as the last event, `event: result`. `answered` and `unknown` results are then stored in the cache for 30 days.
+
+`src/generated/backend-contract.json` holds the text both sides must agree on: the system prompt, the failure messages, the excerpt rules, and the search settings. `backend/scripts/export_contract.py` writes it from the Python code, and `just lint` fails if it is out of date. `just worker-parity` checks that the Worker's search returns the same chunks in the same order as the Python retriever on the dev set.
+
+The Worker's tests (`worker/test/`) run in the Workers runtime with Vitest and a fake AI binding, so they spend no neurons. The portfolio's proxy turns the event stream into the NDJSON lines its page reads (`draft` pieces, then the `result`).
 
 ## Tracing
 

@@ -1,0 +1,36 @@
+// The profile-rag API on Cloudflare Workers Free. See README.md and
+// .pi/plans/cloudflare-worker-api.md for the design.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "profile-rag-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "ai": { "binding": "AI" },
+  // The answer cache (src/cache.ts). Wrangler creates the namespace on the
+  // first deploy and writes its id here.
+  "kv_namespaces": [{ "binding": "ANSWERS" }],
+  // The question limits (src/limits.ts): one SQLite-backed object holds every count.
+  "durable_objects": {
+    "bindings": [{ "name": "LIMITER", "class_name": "QuestionLimiter" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QuestionLimiter"] }],
+  // Set with `wrangler secret put NAME`, or in .dev.vars locally (.dev.vars.example).
+  "secrets": {
+    // ACCESS_KEY: the value the portfolio's proxy sends in X-Access-Key.
+    // DATABASE_URL: Neon's pooled connection string.
+    // Optional, not listed: GROQ_API_KEY (src/optional-secrets.d.ts).
+    "required": ["ACCESS_KEY", "DATABASE_URL"],
+  },
+  "vars": {
+    // Bumped when the prompt or the answer format changes; part of every cache key.
+    "CACHE_VERSION": "1",
+    // A hash of the indexed chunks; `just worker-deploy` sets it. Part of every cache key.
+    "CORPUS_VERSION": "dev",
+    // Fresh (uncached) questions; cache hits are never counted.
+    "QUESTIONS_PER_VISITOR_PER_HOUR": "5",
+    "QUESTIONS_PER_DAY": "60",
+  },
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // Node for the scripts; the Worker's generated types for the src/ modules they import.
+    "types": ["node", "../worker-configuration.d.ts"]
+  },
+  // optional-secrets.d.ts: the generated types reach src/index.ts, which reads GROQ_API_KEY.
+  "include": [".", "../src/optional-secrets.d.ts"]
+}

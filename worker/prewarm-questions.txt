@@ -1,0 +1,11 @@
+# Questions `just worker-prewarm` asks after each deploy, one per line.
+# Keep in step with the suggested questions on the portfolio
+# (web-portfolio: app/routes/home/lib/ask-engine.ts, SUGGESTED). The cache
+# matches a question exactly after normalising case, spaces and the final
+# "?", so a reworded suggestion needs a new line here.
+Does he know Kubernetes?
+Has he shipped payments?
+What has he built with AI?
+Can he own deployments?
+Has he owned a product end to end?
+Does he write Rust?

@@ -1,0 +1,3 @@
+# Written by scripts/export_contract.py; `just worker-contract-check` compares it byte for byte.
+src/generated/
+worker-configuration.d.ts

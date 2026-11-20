@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+ACCESS_KEY=change-me
+# The local database from compose.yaml works through Neon's driver only with a
+# WebSocket proxy, so point this at a Neon branch for `wrangler dev`.
+DATABASE_URL=postgresql://user:password@ep-example-pooler.region.aws.neon.tech/neondb?sslmode=require
+# Optional: Groq answers when Workers AI fails.
+# GROQ_API_KEY=

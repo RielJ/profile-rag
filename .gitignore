@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Settings for a local run of the deploy image (docs/DEPLOY.md)
+deploy.env
 
 # Real corpus and evaluation data. The repository is public; only the
 # README in each folder is committed. See docs/ARCHITECTURE.md, "Corpus policy".

@@ -1,0 +1,9 @@
+# Only backend/ goes into the image (see Dockerfile). Everything private or
+# local stays out of the build context.
+*
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/README.md
+!backend/src/
+**/__pycache__
+**/*.py[cod]

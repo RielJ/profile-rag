@@ -21,29 +21,29 @@ You need Docker with Compose v2, uv, Node 26 with pnpm, Ollama with `nomic-embed
 git clone <this repository> profile-rag-app
 cd profile-rag-app
 cp .env.example .env
-make demo
+just demo
 ```
 
-`make demo` checks the tools, starts Postgres in Docker, applies the migrations, indexes `corpus-example/`, and starts the API and the frontend. It then prints the address to open, `http://127.0.0.1:5173`. If a tool is missing, `make demo` stops before it changes anything and prints the fix.
+`just demo` checks the tools, starts Postgres in Docker, applies the migrations, indexes `corpus-example/`, and starts the API and the frontend. It then prints the address to open, `http://127.0.0.1:5173`. If a tool is missing, `just demo` stops before it changes anything and prints the fix.
 
-Ask a question such as "What web framework did Dana use for the shipment-tracking API?". To use your own sources, review them with `profile-rag corpus review` and run `make demo CORPUS_DIR=corpus`. [`corpus/README.md`](corpus/README.md) gives the steps.
+Ask a question such as "What web framework did Dana use for the shipment-tracking API?". To use your own sources, review them with `profile-rag corpus review` and run `just demo corpus`. [`corpus/README.md`](corpus/README.md) gives the steps.
 
 ## Privacy
 
 The corpus, the database, the embeddings, and the evaluation questions stay on your machine. Git ignores `corpus/` and `eval/`, except for their READMEs. For each question, Pi sends the question and the retrieved excerpts to the model provider. Each question runs in a new Pi process with no tools, no session file, and no project settings. Logs hold request IDs and error codes, never questions or answers.
 
-The app runs on one machine, for its owner. It has no authentication and no rate limit, so do not deploy it publicly without a separate review. "Not covered" in [`docs/USAGE.md`](docs/USAGE.md#not-covered) lists what that review has to cover.
+By default the app runs on one machine, for its owner, with no access key and no rate limit. [`docs/DEPLOY.md`](docs/DEPLOY.md) puts the API online for a website to call: answers come from an OpenAI-compatible API such as Groq instead of Pi, and an access key plus hourly and daily question limits guard the free model quota. The provider then sees each question and its excerpts, so deploy only a corpus you are willing to publish.
 
 ## Development
 
 ```sh
-make lint        # ruff, oxlint, formatting, and the API types check
-make typecheck   # pyrefly and tsc
-make test        # pytest and Vitest. Needs the database (make db-up)
-make e2e         # Playwright browser tests. Run make e2e-install once first
+just lint        # ruff, oxlint, formatting, and the API types check
+just typecheck   # pyrefly and tsc
+just test        # pytest and Vitest. Needs the database (just db-up)
+just e2e         # Playwright browser tests. Run just e2e-install once first
 ```
 
-The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi. Run `make` with no arguments to list every command.
+The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi. Run `just` with no arguments to list every command.
 
 ## Documentation
 
@@ -51,6 +51,7 @@ The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi.
 | --- | --- |
 | [`docs/USAGE.md`](docs/USAGE.md) | Prerequisites, the web page, the command line, the API, your own corpus, evaluation results, testing, and troubleshooting |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The pipeline, the modules, the database tables, Pi isolation, tracing, and the corpus policy |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Putting the API online for free: Hugging Face Spaces, Neon, Groq, and the access key and limits |
 | [`corpus/README.md`](corpus/README.md) | How to add, copy, and review a source |
 | [`docs/eval/`](docs/eval/) | Retrieval and agent evaluation reports |
 
@@ -63,4 +64,5 @@ The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi.
 | `db/` | Database initialization and migrations |
 | `corpus/`, `eval/` | The real corpus and the private evaluation questions. Git ignores both, except for their READMEs |
 | `corpus-example/`, `eval-example/` | The fictional corpus and its evaluation questions, for the demo and the tests |
-| `scripts/` | `demo.sh`, which `make demo` runs |
+| `scripts/` | `demo.sh`, which `just demo` runs, and `space-push.sh`, which deploys the API |
+| `Dockerfile` | The deploy image of the API |

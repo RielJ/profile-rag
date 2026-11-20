@@ -7,13 +7,14 @@ This guide covers setup, the web page, the command line, the API, the corpus, ev
 | Tool | Version | Install | Used for |
 | --- | --- | --- | --- |
 | Docker with Compose v2 | Docker Desktop or OrbStack (tested: Docker 28.0, Compose 2.34) | [Docker](https://docs.docker.com/get-docker/), [OrbStack](https://orbstack.dev) | Postgres with pgvector |
+| just | 1.39 or later (tested: 1.58) | `brew install just`, or [just](https://just.systems/man/en/packages.html) | Runs the project's commands (`justfile`) |
 | uv | 0.13.6 or later | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Python 3.14 and the backend dependencies. uv downloads Python itself |
-| Node | 26 or later (`.node-version` pins 26) | [fnm](https://github.com/Schniz/fnm) (`fnm install 26`) or [nodejs.org](https://nodejs.org) | The frontend. The Makefile uses fnm when it is installed |
+| Node | 26 or later (`.node-version` pins 26) | [fnm](https://github.com/Schniz/fnm) (`fnm install 26`) or [nodejs.org](https://nodejs.org) | The frontend. The justfile uses fnm when it is installed |
 | pnpm | 12.16.1 | `corepack enable pnpm`, or [pnpm](https://pnpm.io/installation) | The frontend dependencies |
 | Ollama | Recent (tested: 0.40) | [Ollama](https://ollama.com/download), then `ollama pull nomic-embed-text:v1.5` | Embeddings, on the host |
 | Pi | 1.5.0 (tested) | [Pi](https://pi.dev), then `pi` and `/login` | The answer model. Pi needs credentials for the provider of `PROFILE_RAG_PI_MODEL` |
 
-`make demo` checks each of these before it changes anything, and prints one fix for each missing item.
+`just demo` checks each of these before it changes anything, and prints one fix for each missing item.
 
 ## Quick start
 
@@ -21,10 +22,10 @@ This guide covers setup, the web page, the command line, the API, the corpus, ev
 git clone <this repository> profile-rag-app
 cd profile-rag-app
 cp .env.example .env
-make demo
+just demo
 ```
 
-`make demo` runs these steps:
+`just demo` runs these steps:
 
 1. It checks the tools in the table above. Then it installs the backend dependencies (`uv sync`) and checks the ports, Ollama and the embedding model, Pi, and the corpus. If anything is missing, it lists every problem and stops before it starts the database.
 2. It installs the frontend dependencies (`pnpm install`).
@@ -40,15 +41,15 @@ The demo is running. Corpus: corpus-example. Embedding model: nomic-v15.
   API: http://127.0.0.1:8000/docs
 ```
 
-Press Ctrl-C to stop the API and the frontend. The database keeps running. `make db-down` stops it, and `make db-reset` also deletes its data. You can run `make demo` again at any time: the database stays up, applied migrations are skipped, and unchanged chunks are skipped.
+Press Ctrl-C to stop the API and the frontend. The database keeps running. `just db-down` stops it, and `just db-reset` also deletes its data. You can run `just demo` again at any time: the database stays up, applied migrations are skipped, and unchanged chunks are skipped.
 
-On a machine with warm uv and pnpm caches, the first `make demo` takes about 40 seconds and a second run about 5 seconds. A cold first run also downloads Python 3.14, the Python and Node packages, and the Postgres image.
+On a machine with warm uv and pnpm caches, the first `just demo` takes about 40 seconds and a second run about 5 seconds. A cold first run also downloads Python 3.14, the Python and Node packages, and the Postgres image.
 
-The demo uses the database in `.env`. `make demo` replaces the chunks of that database's table with the corpus it indexes.
+The demo uses the database in `.env`. `just demo` replaces the chunks of that database's table with the corpus it indexes.
 
 ### Run a second checkout next to the first
 
-docker compose finds a container by its project name only. Two checkouts with the same `COMPOSE_PROJECT_NAME` would share one database container and its data. `make demo` refuses to start when another checkout owns the project name. To run a second checkout, give it its own name and ports in its `.env`:
+docker compose finds a container by its project name only. Two checkouts with the same `COMPOSE_PROJECT_NAME` would share one database container and its data. `just demo` refuses to start when another checkout owns the project name. To run a second checkout, give it its own name and ports in its `.env`:
 
 ```sh
 COMPOSE_PROJECT_NAME=profile-rag-second
@@ -59,13 +60,13 @@ API_PORT=8010
 FRONTEND_PORT=5183
 ```
 
-Set `API_PORT` or `FRONTEND_PORT` the same way when another program already uses port 8000 or 5173. `make backend` and `make frontend` use these ports too.
+Set `API_PORT` or `FRONTEND_PORT` the same way when another program already uses port 8000 or 5173. `just backend` and `just frontend` use these ports too.
 
 ## Use the app
 
 ### The web page
 
-Open the address that `make demo` prints and type a question, for example "What web framework did Dana use for the shipment-tracking API?". Enter asks the question. Shift+Enter adds a new line. Each question starts one Pi process, so an answer takes a few seconds.
+Open the address that `just demo` prints and type a question, for example "What web framework did Dana use for the shipment-tracking API?". Enter asks the question. Shift+Enter adds a new line. Each question starts one Pi process, so an answer takes a few seconds.
 
 The page shows one of these results:
 
@@ -74,7 +75,7 @@ The page shows one of these results:
 - **No answer this time**: the server failed, for example because Pi timed out. The page shows a request ID. The API's log has a line with the same request ID, the error class, and the error code.
 - **The question was not accepted** (HTTP 422), or **Connection problem** (no network, or a response that the page cannot read).
 
-To run the API and the frontend in separate terminals, with auto-reload for the API, run `make backend` and `make frontend` after `make demo` has indexed once. Vite forwards every `/api` request to the API, so the browser talks to one origin.
+To run the API and the frontend in separate terminals, with auto-reload for the API, run `just backend` and `just frontend` after `just demo` has indexed once. Vite forwards every `/api` request to the API, so the browser talks to one origin.
 
 ### The command line
 
@@ -142,7 +143,7 @@ The answer names the attribution ("According to Dana's resume, ..."), so the app
 
 ## Use your own corpus
 
-1. Register, copy, and review each source with `profile-rag corpus add`, `corpus snapshot`, and `corpus review`. [`corpus/README.md`](../corpus/README.md) gives the steps. A source moves from `candidate` to `in_review` to `approved` (or `rejected`), and only approved sources are indexed. Approval records the file's SHA-256 hash. If the file changes later, the approval is stale, and `index` and `make demo` stop until you review the source again.
+1. Register, copy, and review each source with `profile-rag corpus add`, `corpus snapshot`, and `corpus review`. [`corpus/README.md`](../corpus/README.md) gives the steps. A source moves from `candidate` to `in_review` to `approved` (or `rejected`), and only approved sources are indexed. Approval records the file's SHA-256 hash. If the file changes later, the approval is stale, and `index` and `just demo` stop until you review the source again.
 
    `corpus review` with no ID starts a terminal session over every source in review and every stale approval. Each source prints its contents in the terminal (findings marked, secrets masked), then the session asks the checklist questions and then offers to approve. A `n` anywhere brings up a menu to view, edit, reject, or skip. Approval needs a `y` to every checklist item for the file's current content, and the answers go into the audit record in `reviews/`. Quitting keeps the decisions already made. For example (inputs after each prompt; abridged):
 
@@ -171,14 +172,14 @@ The answer names the attribution ("According to Dana's resume, ..."), so the app
 2. Run the demo on that corpus:
 
    ```sh
-   make demo CORPUS_DIR=corpus
+   just demo corpus
    ```
 
-   `CORPUS_DIR` is the folder that holds `sources.yaml` and `approved/`, relative to the repository root. If the folder has no approved source, `make demo` stops before it touches the database, with a message that gives the number of registered sources and how to approve one. It does not print source titles or text.
+   `corpus` is the folder that holds `sources.yaml` and `approved/`, relative to the repository root. If the folder has no approved source, `just demo` stops before it touches the database, with a message that gives the number of registered sources and how to approve one. It does not print source titles or text.
 
-To index without starting the servers, run `make index CORPUS_DIR=corpus`. Add `MODEL=qwen3-06b` to index the second embedding model (pull `qwen3-embedding:0.6b` first). Each model has its own table.
+To index without starting the servers, run `just index corpus`. Add the model name, as in `just index corpus qwen3-06b`, to index the second embedding model (pull `qwen3-embedding:0.6b` first). Each model has its own table.
 
-A new splitter version (`SPLITTER_VERSION` in `backend/src/profile_rag/corpus/splitting.py`) changes every chunk ID. After that change, run `make index` again for each model and each corpus. The command replaces every row and reports them as added and deleted.
+A new splitter version (`SPLITTER_VERSION` in `backend/src/profile_rag/corpus/splitting.py`) changes every chunk ID. After that change, run `just index` again for each model and each corpus. The command replaces every row and reports them as added and deleted.
 
 ## Evaluation
 
@@ -214,12 +215,12 @@ The dev set has 39 questions (34 answerable, 5 unanswerable) over the real corpu
 
 ## Testing
 
-The tests need the database. Start it with `make demo` or `make db-up`, then run:
+The tests need the database. Start it with `just demo` or `just db-up`, then run:
 
 ```sh
-make lint        # ruff and oxlint, formatting, and the API types check
-make typecheck   # pyrefly and tsc
-make test        # pytest and Vitest
+just lint        # ruff and oxlint, formatting, and the API types check
+just typecheck   # pyrefly and tsc
+just test        # pytest and Vitest
 ```
 
 The tests use fake embeddings, a fake chat model, and a fake Pi script. They need no Ollama and no Pi, and they call no model. To also run the tests that call a real Ollama and a real Pi, run `uv --directory backend run pytest --live`. The Pi tests check the installed version and its flags, and make one model call.
@@ -227,15 +228,15 @@ The tests use fake embeddings, a fake chat model, and a fake Pi script. They nee
 The browser tests run in Playwright's Chromium, at desktop size and at 375 pixels wide. Install the browser once per machine (about 170 MB), then run them:
 
 ```sh
-make e2e-install
-make e2e
+just e2e-install
+just e2e
 ```
 
-`make e2e` starts its own API server on port 8765 and Vite on port 5174, and stops both at the end. The API server runs the real routes over `corpus-example/` in a throwaway database, with fake embeddings and a fake Pi. It never uses `.env`'s database, `corpus/`, or the Pi settings.
+`just e2e` starts its own API server on port 8765 and Vite on port 5174, and stops both at the end. The API server runs the real routes over `corpus-example/` in a throwaway database, with fake embeddings and a fake Pi. It never uses `.env`'s database, `corpus/`, or the Pi settings.
 
-The frontend's API types, `frontend/src/api/schema.d.ts`, are generated from the OpenAPI schema. After you change a route or a model in `backend/src/profile_rag/api/`, run `make types`. `make lint` fails while the file is out of date.
+The frontend's API types, `frontend/src/api/schema.d.ts`, are generated from the OpenAPI schema. After you change a route or a model in `backend/src/profile_rag/api/`, run `just types`. `just lint` fails while the file is out of date.
 
-Run `make` with no arguments to list every command.
+Run `just` with no arguments to list every command.
 
 ## Privacy model
 
@@ -255,22 +256,22 @@ Run `make` with no arguments to list every command.
 | `Ollama has no nomic-embed-text:v1.5` | Run `ollama pull nomic-embed-text:v1.5`. |
 | `Ollama's nomic-embed-text:v1.5 has digest ..., but vectorstore/models.py expects ...` | The tag now points at other weights. Vectors from the two versions do not match. `backend/src/profile_rag/vectorstore/models.py` explains how to move to new weights. |
 | `Pi ('pi') is not on PATH` | Install Pi and log in (`pi`, then `/login`), or set `PROFILE_RAG_PI_BIN` in `.env` to its path. |
-| The page shows **No answer this time**, and the API log has `code=pi_failed` | Pi started but the model call failed, usually because Pi has no credentials for the provider of `PROFILE_RAG_PI_MODEL`. Run `pi` and `/login`. `make demo` cannot check credentials without a model call. |
+| The page shows **No answer this time**, and the API log has `code=pi_failed` | Pi started but the model call failed, usually because Pi has no credentials for the provider of `PROFILE_RAG_PI_MODEL`. Run `pi` and `/login`. `just demo` cannot check credentials without a model call. |
 | `code=pi_timeout` | The model took longer than `PROFILE_RAG_PI_TIMEOUT_SECONDS` (default 120). Raise it in `.env`. |
-| `has no approved source` | Approve a source (see [Use your own corpus](#use-your-own-corpus)), or run `make demo` without `CORPUS_DIR`. |
-| `make lint` fails with `frontend/src/api/schema.d.ts is out of date` | Run `make types`, then commit the regenerated file with the API change. |
-| `make test` fails to connect to the database | Run `make db-up`. Check that `TEST_DATABASE_URL` uses `DB_PORT`. |
+| `has no approved source` | Approve a source (see [Use your own corpus](#use-your-own-corpus)), or run `just demo` with no argument. |
+| `just lint` fails with `frontend/src/api/schema.d.ts is out of date` | Run `just types`, then commit the regenerated file with the API change. |
+| `just test` fails to connect to the database | Run `just db-up`. Check that `TEST_DATABASE_URL` uses `DB_PORT`. |
 | `fnm has no Node 26` | Run `fnm install 26`. |
 
 ## Not covered
 
-This app runs on one machine, for its owner. Public deployment is out of scope and needs its own review before anyone does it. That review has to cover at least these points:
+By default this app runs on one machine, for its owner. [`DEPLOY.md`](DEPLOY.md) covers one public setup: the API behind a website's server-side proxy, with an OpenAI-compatible model instead of Pi, an access key, and hourly and daily question limits. These points stay open in every setup:
 
-- Provider access: every visitor's question would spend the owner's Pi credentials and provider account.
-- Cost: each question is at least one paid model call, and nothing limits the total.
-- Rate limits: the API has no authentication, no rate limit, and no limit on concurrent Pi processes.
-- Logging: a public server needs a log and retention policy. Today the API logs to stderr only.
-- Network exposure: every server binds to 127.0.0.1, and the API has no TLS or CORS setup.
+- Provider access: run locally, every question spends the owner's Pi credentials. Never deploy with `PROFILE_RAG_LLM=pi`.
+- Concurrency: the limits count questions, not concurrent requests.
+- Shared counts: the limits live in memory, so a restart resets them and replicas count separately.
+- Logging: the API logs to stderr only, with no retention policy.
+- Network exposure: the API has no TLS or CORS setup of its own. The deployed setup relies on the host's TLS and on the browser never calling the API directly.
 
 ## Layout
 
@@ -279,7 +280,7 @@ This app runs on one machine, for its owner. Public deployment is out of scope a
 | `backend/` | The FastAPI service and the `profile-rag` command-line tool (Python) |
 | `frontend/` | The React page (TypeScript, Vite). Browser tests are in `frontend/tests/e2e/` |
 | `db/` | Database initialization and migrations |
-| `scripts/` | `demo.sh`, which `make demo` runs |
+| `scripts/` | `demo.sh`, which `just demo` runs |
 | `corpus/` | The real corpus. Git ignores everything except its README |
 | `corpus-example/` | The fictional corpus for tests and the demo |
 | `eval/` | Private evaluation questions and results. Git ignores everything except its README |

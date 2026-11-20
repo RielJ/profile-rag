@@ -6,7 +6,10 @@ search store of the configured embedding model, and returns a
 raises `SearchSetupError`, and the server does not start:
 
 - `PROFILE_RAG_API_MODEL` must name a model in vectorstore/models.py.
-- Ollama must have that model, with the digest models.py expects.
+- The embedder must be able to run that model: with
+  `PROFILE_RAG_EMBEDDER=ollama` (the default), Ollama must have it with the
+  digest models.py expects; with `fastembed`, models.py must name its
+  fastembed weights, which are loaded at startup.
 - The model's chunk table must exist.
 - With tracing on, the table must hold exactly the chunks of
   corpus-example/ (as cli.py's `_require_traceable`), because traces may
@@ -20,16 +23,17 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable
 from langchain_postgres import PGEngine
 
 from profile_rag import tracing
 from profile_rag.corpus import documents, registry, splitting
-from profile_rag.generation import pi_chat_model
+from profile_rag.generation import chat_models
 from profile_rag.rag import ChainCache
 from profile_rag.retrievers.factory import SearchMode, build_retriever
 from profile_rag.settings import Settings
-from profile_rag.vectorstore import ollama_embeddings, store
+from profile_rag.vectorstore import fastembed_embeddings, ollama_embeddings, store
 from profile_rag.vectorstore.models import MODELS, EmbeddingModel
 
 
@@ -58,7 +62,7 @@ def open_chains(settings: Settings) -> OpenChains:
             f"PROFILE_RAG_API_MODEL={settings.api_model!r} is not one of: {', '.join(MODELS)}."
         )
     database_url = str(settings.database_url)
-    if problem := ollama_embeddings.model_problem(model, settings.ollama_url):
+    if problem := _embedder_problem(settings, model):
         raise SearchSetupError(problem)
     if not store.table_exists(database_url, model.table_name):
         raise SearchSetupError(
@@ -67,7 +71,7 @@ def open_chains(settings: Settings) -> OpenChains:
     if tracing.tracing_enabled():
         _check_example_table(database_url, model)
 
-    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    embeddings = _embeddings(settings, model)
     engine = PGEngine.from_connection_string(url=database_url)
     search_store = store.open_search_store(engine, model, embeddings)
 
@@ -76,12 +80,28 @@ def open_chains(settings: Settings) -> OpenChains:
 
     chains = ChainCache(
         make_retriever,
-        pi_chat_model.from_settings(settings),
+        chat_models.from_settings(settings),
         default_mode=settings.api_mode,
         default_k=settings.api_k,
     )
     chains.get()  # the default chain, built now rather than on the first request
     return OpenChains(chains=chains, engine=engine)
+
+
+def _embedder_problem(settings: Settings, model: EmbeddingModel) -> str | None:
+    match settings.embedder:
+        case "ollama":
+            return ollama_embeddings.model_problem(model, settings.ollama_url)
+        case "fastembed":
+            return fastembed_embeddings.model_problem(model)
+
+
+def _embeddings(settings: Settings, model: EmbeddingModel) -> Embeddings:
+    match settings.embedder:
+        case "ollama":
+            return ollama_embeddings.for_model(model, settings.ollama_url)
+        case "fastembed":
+            return fastembed_embeddings.for_model(model)
 
 
 def _check_example_table(database_url: str, model: EmbeddingModel) -> None:
@@ -97,5 +117,5 @@ def _check_example_table(database_url: str, model: EmbeddingModel) -> None:
     if store.chunk_ids(database_url, model) != {c.metadata["chunk_id"] for c in chunks}:
         raise SearchSetupError(
             f"LANGSMITH_TRACING=true, but {model.table_name} does not hold exactly the"
-            " example corpus. Run `make index CORPUS_DIR=corpus-example`, or turn tracing off."
+            " example corpus. Run `just index corpus-example`, or turn tracing off."
         )

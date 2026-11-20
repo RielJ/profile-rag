@@ -23,6 +23,9 @@ class EmbeddingModel:
     document_prefix: str  # added to every chunk before `embed_documents`
     query_prefix: str  # added to the question before `embed_query`
     max_words: int  # longer texts are refused, not sent (Ollama would cut them)
+    # The same weights in fastembed (fastembed_embeddings.py), for a server
+    # without Ollama. None when fastembed has no model whose vectors match.
+    fastembed_name: str | None = None
 
 
 # Both digests are the SHA-256 of the tag's manifest, read on 2026-10-29 from
@@ -41,6 +44,7 @@ NOMIC_V15 = EmbeddingModel(
     document_prefix="search_document: ",
     query_prefix="search_query: ",
     max_words=1000,
+    fastembed_name="nomic-ai/nomic-embed-text-v1.5",
 )
 
 # Qwen3-Embedding 0.6B: the query format is `get_detailed_instruct` from the

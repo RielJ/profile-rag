@@ -121,7 +121,7 @@ from profile_rag.evaluation import agent_compare, ann_compare
 from profile_rag.evaluation.labels import ResolvedQuestion, resolve_labels
 from profile_rag.evaluation.questions import QuestionFileError, load_questions
 from profile_rag.evaluation.runner import RunConfig, run_evaluation
-from profile_rag.generation import pi_chat_model
+from profile_rag.generation import chat_models
 from profile_rag.generation.answer import InventedCitation, Unknown
 from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.pi_rpc import PiError, PiProcessError, PiTimeout
@@ -716,8 +716,8 @@ AnswerKOption = Annotated[int, typer.Option("-k", min=1, help="How many chunks t
 
 
 def _pi_model(settings: Settings) -> BaseChatModel:
-    """The Pi chat model from the settings. Tests replace this function."""
-    return pi_chat_model.from_settings(settings)
+    """The answer model from the settings (Pi by default). Tests replace this function."""
+    return chat_models.from_settings(settings)
 
 
 def _ask_failure(message: str, code: int) -> NoReturn:
@@ -922,7 +922,7 @@ def _eval_inputs(
         _fail(
             f"{model.table_name} does not hold this set's corpus ({root.name}/):"
             f" {len(split - indexed)} chunks missing, {len(indexed - split)} extra."
-            f" Run `make index CORPUS_DIR={root.name} MODEL={model.key}` first."
+            f" Run `just index {root.name} {model.key}` first."
         )
     return resolution.questions, len(chunks), database_url, settings.ollama_url
 
@@ -1084,7 +1084,7 @@ def _require_traceable(database_url: str, model: EmbeddingModel) -> None:
         _fail(
             f"LANGSMITH_TRACING=true, but {model.table_name} does not hold exactly the"
             " example corpus. Traces may only come from corpus-example/: run"
-            f" `make index CORPUS_DIR=corpus-example MODEL={model.key}`, or turn tracing off."
+            f" `just index corpus-example {model.key}`, or turn tracing off."
         )
 
 

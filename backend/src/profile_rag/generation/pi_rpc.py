@@ -47,6 +47,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import IO, NoReturn
 
+from profile_rag.generation.errors import ModelError, ModelTimeout
+
 TESTED_PI_VERSION = "1.5.0"
 
 # The lowest thinking level of claude-opus-5-5. Pi 1.5.0's model table marks
@@ -142,11 +144,11 @@ class PiReply:
     system_sections: frozenset[str] = field(default_factory=frozenset)
 
 
-class PiError(Exception):
+class PiError(ModelError):
     """Base class of every failure in this module."""
 
 
-class PiTimeout(PiError):
+class PiTimeout(PiError, ModelTimeout):
     def __init__(self, seconds: float) -> None:
         super().__init__(f"Pi did not finish within {seconds:g} seconds")
         self.seconds = seconds

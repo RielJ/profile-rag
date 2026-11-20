@@ -48,6 +48,20 @@ class Settings(BaseSettings):
         default=120.0, gt=0, validation_alias="PROFILE_RAG_PI_TIMEOUT_SECONDS"
     )
 
+    # Which backend runs the answer model (generation/chat_models.py): Pi, as
+    # above, or an OpenAI-compatible HTTP API such as Groq or OpenRouter, for
+    # a deployed server where Pi cannot run. The PROFILE_RAG_LLM_* settings
+    # apply to the `openai` backend only.
+    llm: Literal["pi", "openai"] = Field(default="pi", validation_alias="PROFILE_RAG_LLM")
+    llm_base_url: str = Field(
+        default="https://api.groq.com/openai/v1", validation_alias="PROFILE_RAG_LLM_BASE_URL"
+    )
+    llm_model: str = Field(default="openai/gpt-oss-120b", validation_alias="PROFILE_RAG_LLM_MODEL")
+    llm_api_key: SecretStr | None = Field(default=None, validation_alias="PROFILE_RAG_LLM_API_KEY")
+    llm_timeout_seconds: float = Field(
+        default=60.0, gt=0, validation_alias="PROFILE_RAG_LLM_TIMEOUT_SECONDS"
+    )
+
     # The search behind `POST /api/ask` (api/search.py): the embedding model
     # key (vectorstore/models.py), and the retriever mode and `k` used when a
     # request does not set them. The modes are retrievers/factory.py's.
@@ -56,12 +70,29 @@ class Settings(BaseSettings):
         default="hybrid", validation_alias="PROFILE_RAG_API_MODE"
     )
     api_k: int = Field(default=8, ge=1, le=20, validation_alias="PROFILE_RAG_API_K")
+    # Who may ask the API, and how often (api/access.py). Unset means no
+    # check, which suits a local server.
+    access_key: SecretStr | None = Field(default=None, validation_alias="PROFILE_RAG_ACCESS_KEY")
+    client_questions_per_hour: int | None = Field(
+        default=None, ge=1, validation_alias="PROFILE_RAG_CLIENT_QUESTIONS_PER_HOUR"
+    )
+    questions_per_day: int | None = Field(
+        default=None, ge=1, validation_alias="PROFILE_RAG_QUESTIONS_PER_DAY"
+    )
+
+    # What computes the API's question embeddings: the local Ollama server, or
+    # fastembed inside the process (vectorstore/fastembed_embeddings.py), for
+    # a deployed server without Ollama. Indexing always uses Ollama.
+    embedder: Literal["ollama", "fastembed"] = Field(
+        default="ollama", validation_alias="PROFILE_RAG_EMBEDDER"
+    )
 
 
 @lru_cache
 def get_settings() -> Settings:
     """Return the settings, loaded once per process."""
-    return Settings()  # values come from the environment
+    # Values come from the environment; Pyright does not know pydantic-settings.
+    return Settings()  # pyright: ignore[reportCallIssue]
 
 
 class TracingSettings(BaseSettings):

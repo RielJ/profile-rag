@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 from fake_pi import FAKE_PI, accepted, reply_steps, write_script
@@ -63,6 +63,7 @@ def test_reply_text_reaches_callbacks_as_tokens_while_pi_writes(tmp_path: Path) 
         def __init__(self) -> None:
             self.tokens: list[str] = []
 
+        @override
         def on_llm_new_token(
             self, token: str | list[str | dict[str, Any]], **kwargs: object
         ) -> None:

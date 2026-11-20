@@ -64,7 +64,7 @@ from profile_rag.api.models import (
 from profile_rag.corpus.splitting import HEADING_SEPARATOR, heading_line
 from profile_rag.generation.answer import InventedCitation, Unknown, draft_text
 from profile_rag.generation.chain import GroundedAnswer, build_chain
-from profile_rag.generation.pi_rpc import PiError, PiTimeout
+from profile_rag.generation.errors import ModelError, ModelTimeout
 from profile_rag.retrievers.factory import SearchMode
 from profile_rag.vectorstore.prefixed import EmbeddingError
 
@@ -84,6 +84,7 @@ FAILURES: dict[FailedCode, str] = {
     "invented_citation": "The answer model cited evidence it was not given, so the answer"
     " was discarded. Try again.",
     "internal_error": "Something went wrong on the server.",
+    "rate_limited": "The demo has answered as many questions as it can for now. Try again later.",
 }
 
 # Errors of the search step: the embedding call to Ollama and the queries.
@@ -146,9 +147,9 @@ class DraftText(BaseCallbackHandler):
 
 def failure_code(error: Exception) -> FailedCode:
     """The `FailedCode` of an error the chain raised."""
-    if isinstance(error, PiTimeout):
+    if isinstance(error, ModelTimeout):
         return "pi_timeout"
-    if isinstance(error, PiError):
+    if isinstance(error, ModelError):
         return "pi_failed"
     if isinstance(error, OutputParserException):
         return "bad_reply"

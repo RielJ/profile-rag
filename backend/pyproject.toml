@@ -35,6 +35,8 @@ dependencies = [
     # the ollama client raises, sqlalchemy is what langchain-postgres raises.
     "httpx>=0.28.1,<0.29",
     "sqlalchemy>=2.1.6,<3",
+    "langchain-openai>=1.7.4",
+    "fastembed>=0.9.1",
 ]
 
 # The `profile-rag` command-line entry point.
@@ -70,7 +72,7 @@ target-version = "py314"
 # ANN: missing annotations, so the editor flags them before Pyrefly strict does.
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ANN"]
 
-# Pyrefly is the only type checker: `make typecheck` and the editor LSP both
+# Pyrefly is the only type checker: `just typecheck` and the editor LSP both
 # run the version pinned above, so they report the same errors.
 [tool.pyrefly]
 project-includes = ["src", "tests"]

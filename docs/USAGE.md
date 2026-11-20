@@ -265,13 +265,13 @@ Run `just` with no arguments to list every command.
 
 ## Not covered
 
-By default this app runs on one machine, for its owner. [`DEPLOY.md`](DEPLOY.md) covers one public setup: the API behind a website's server-side proxy, with an OpenAI-compatible model instead of Pi, an access key, and hourly and daily question limits. These points stay open in every setup:
+By default this app runs on one machine, for its owner. [`DEPLOY.md`](DEPLOY.md) covers the public setup: a Cloudflare Worker (`worker/`) behind a website's server-side proxy, with Workers AI instead of Pi, an answer cache, an access key, and hourly and daily question limits. These points stay open:
 
-- Provider access: run locally, every question spends the owner's Pi credentials. Never deploy with `PROFILE_RAG_LLM=pi`.
+- Provider access: run locally, every question spends the owner's Pi credentials. Never put the Python API online with `PROFILE_RAG_LLM=pi`.
 - Concurrency: the limits count questions, not concurrent requests.
-- Shared counts: the limits live in memory, so a restart resets them and replicas count separately.
-- Logging: the API logs to stderr only, with no retention policy.
-- Network exposure: the API has no TLS or CORS setup of its own. The deployed setup relies on the host's TLS and on the browser never calling the API directly.
+- Shared counts in the Python API: its limits live in memory, so a restart resets them. The Worker keeps its counts in a Durable Object.
+- Logging: the Python API logs to stderr only, with no retention policy. The Worker's logs stay in Cloudflare's Workers Logs.
+- Network exposure: neither API sets up CORS. The deployed setup relies on the browser never calling the API directly.
 
 ## Layout
 

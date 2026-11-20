@@ -32,7 +32,7 @@ Ask a question such as "What web framework did Dana use for the shipment-trackin
 
 The corpus, the database, the embeddings, and the evaluation questions stay on your machine. Git ignores `corpus/` and `eval/`, except for their READMEs. For each question, Pi sends the question and the retrieved excerpts to the model provider. Each question runs in a new Pi process with no tools, no session file, and no project settings. Logs hold request IDs and error codes, never questions or answers.
 
-By default the app runs on one machine, for its owner, with no access key and no rate limit. [`docs/DEPLOY.md`](docs/DEPLOY.md) puts the API online for a website to call: answers come from an OpenAI-compatible API such as Groq instead of Pi, and an access key plus hourly and daily question limits guard the free model quota. The provider then sees each question and its excerpts, so deploy only a corpus you are willing to publish.
+By default the app runs on one machine, for its owner, with no access key and no rate limit. [`docs/DEPLOY.md`](docs/DEPLOY.md) puts the API online for a website to call, as a Cloudflare Worker (`worker/`): answers come from `gpt-oss-120b` on Workers AI instead of Pi, repeated questions are answered from a cache, and an access key plus hourly and daily question limits guard the free quota. The model provider then sees each question and its excerpts, so deploy only a corpus you are willing to publish.
 
 ## Development
 
@@ -51,7 +51,7 @@ The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi.
 | --- | --- |
 | [`docs/USAGE.md`](docs/USAGE.md) | Prerequisites, the web page, the command line, the API, your own corpus, evaluation results, testing, and troubleshooting |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The pipeline, the modules, the database tables, Pi isolation, tracing, and the corpus policy |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Putting the API online for free: Hugging Face Spaces, Neon, Groq, and the access key and limits |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Putting the API online for free: the Cloudflare Worker, Workers AI, Neon, the answer cache, and the access key and limits |
 | [`corpus/README.md`](corpus/README.md) | How to add, copy, and review a source |
 | [`docs/eval/`](docs/eval/) | Retrieval and agent evaluation reports |
 
@@ -60,9 +60,9 @@ The tests use fake embeddings and a fake Pi, so they need neither Ollama nor Pi.
 | Path | Contents |
 | --- | --- |
 | `backend/` | The FastAPI service and the `profile-rag` command-line tool (Python 3.14) |
+| `worker/` | The deployed API: a Cloudflare Worker in TypeScript that searches Neon, streams the answer, and caches it |
 | `frontend/` | The React page (TypeScript, Vite) and its browser tests |
 | `db/` | Database initialization and migrations |
 | `corpus/`, `eval/` | The real corpus and the private evaluation questions. Git ignores both, except for their READMEs |
 | `corpus-example/`, `eval-example/` | The fictional corpus and its evaluation questions, for the demo and the tests |
-| `scripts/` | `demo.sh`, which `just demo` runs, and `space-push.sh`, which deploys the API |
-| `Dockerfile` | The deploy image of the API |
+| `scripts/` | `demo.sh`, which `just demo` runs |

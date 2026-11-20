@@ -16,9 +16,15 @@ from langchain_ollama import OllamaEmbeddings
 
 from profile_rag.api import search
 from profile_rag.settings import get_settings
-from profile_rag.vectorstore import fastembed_embeddings
+from profile_rag.vectorstore import fastembed_embeddings, ollama_embeddings
 from profile_rag.vectorstore.fastembed_embeddings import FastEmbedEmbeddings
-from profile_rag.vectorstore.models import MODELS, NOMIC_V15, QWEN3_06B, EmbeddingModel
+from profile_rag.vectorstore.models import (
+    MODELS,
+    NOMIC_V15,
+    QWEN3_06B,
+    EmbeddingModel,
+    OllamaModel,
+)
 from profile_rag.vectorstore.prefixed import PrefixedEmbeddings
 
 
@@ -79,8 +85,8 @@ def test_the_api_with_fastembed_never_asks_ollama(
     def no_ollama(*args: object) -> None:
         raise AssertionError("Ollama was asked")
 
-    monkeypatch.setattr(search.ollama_embeddings, "model_problem", no_ollama)
-    monkeypatch.setattr(search.ollama_embeddings, "for_model", no_ollama)
+    monkeypatch.setattr(ollama_embeddings, "model_problem", no_ollama)
+    monkeypatch.setattr(ollama_embeddings, "for_model", no_ollama)
     settings = get_settings().model_copy(update={"embedder": "fastembed"})
 
     assert search._embedder_problem(settings, NOMIC_V15) is None
@@ -94,7 +100,7 @@ def test_the_api_uses_ollama_by_default(monkeypatch: pytest.MonkeyPatch) -> None
     def record(model: EmbeddingModel, url: str) -> None:
         asked.append(url)
 
-    monkeypatch.setattr(search.ollama_embeddings, "model_problem", record)
+    monkeypatch.setattr(ollama_embeddings, "model_problem", record)
     settings = get_settings()
     assert settings.embedder == "ollama"
     search._embedder_problem(settings, NOMIC_V15)
@@ -110,9 +116,11 @@ TEXTS = [
 
 @pytest.mark.live
 @pytest.mark.parametrize(
-    "model", [m for m in MODELS.values() if m.fastembed_name], ids=lambda m: m.key
+    "model",
+    [m for m in MODELS.values() if isinstance(m, OllamaModel) and m.fastembed_name],
+    ids=lambda m: m.key,
 )
-def test_fastembed_vectors_match_ollamas(model: EmbeddingModel) -> None:
+def test_fastembed_vectors_match_ollamas(model: OllamaModel) -> None:
     assert model.fastembed_name is not None
     ours = FastEmbedEmbeddings(TextEmbedding(model.fastembed_name)).embed_documents(TEXTS)
     theirs = OllamaEmbeddings(

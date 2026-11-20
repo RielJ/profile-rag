@@ -3,25 +3,30 @@
 No Ollama: the tests replace `ollama_embeddings.ollama_digests` and
 `ollama_embeddings.for_model`, so
 the digest check sees a fixed list and the vectors come from
-`DeterministicFakeEmbedding`. The database is a throwaway one with every
-migration applied.
+`DeterministicFakeEmbedding`. No Cloudflare either: the Workers AI tests
+give `workers_ai_embeddings.for_model` an `httpx.MockTransport`. The
+database is a throwaway one with every migration applied.
 """
 
+import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
+import httpx
 import psycopg
 import pytest
 import yaml
 from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
+from pydantic import SecretStr
 from typer.testing import CliRunner, Result
 
 from profile_rag import cli
 from profile_rag.db.migrate import migrate
 from profile_rag.settings import get_settings
-from profile_rag.vectorstore import ollama_embeddings
-from profile_rag.vectorstore.models import NOMIC_V15, EmbeddingModel
-from profile_rag.vectorstore.prefixed import EmbeddingError
+from profile_rag.vectorstore import ollama_embeddings, workers_ai_embeddings
+from profile_rag.vectorstore.models import BGE_M3, NOMIC_V15, EmbeddingModel, WorkersAIModel
+from profile_rag.vectorstore.prefixed import EmbeddingError, PrefixedEmbeddings
 
 EXAMPLE_ROOT = Path(__file__).resolve().parents[2] / "corpus-example"
 
@@ -194,3 +199,97 @@ def test_an_embedding_error_names_the_chunk(database: str, monkeypatch: pytest.M
     assert result.exit_code == 2
     assert "error: chunk " in result.output
     assert result.output.rstrip().endswith(": too long")
+
+
+# --- A Workers AI model -----------------------------------------------------------
+
+CF_TOKEN = "cf-test-token-not-real"
+
+
+@pytest.fixture
+def cf_settings(database: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The `database` settings plus Cloudflare credentials; Ollama refuses."""
+    settings = cli.get_settings().model_copy(
+        update={"cf_account_id": "acct", "cf_api_token": SecretStr(CF_TOKEN)}
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+
+    def no_ollama(base_url: str) -> dict[str, str]:
+        raise AssertionError("a Workers AI model must not ask Ollama")
+
+    monkeypatch.setattr(ollama_embeddings, "ollama_digests", no_ollama)
+    return database
+
+
+def cloudflare(
+    monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], httpx.Response]
+) -> None:
+    """Route `workers_ai_embeddings.for_model` through `handler` instead of the network."""
+    real = workers_ai_embeddings.for_model
+
+    def make(
+        model: WorkersAIModel, account_id: str | None, api_token: SecretStr | None
+    ) -> PrefixedEmbeddings:
+        return real(model, account_id, api_token, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(workers_ai_embeddings, "for_model", make)
+
+
+def bge_rows(database: str) -> int:
+    with psycopg.connect(database) as conn:
+        row = conn.execute("SELECT count(*) FROM chunks_bge_m3").fetchone()
+    assert row is not None
+    return row[0]
+
+
+@pytest.mark.usefixtures("database")
+def test_a_workers_ai_model_without_credentials_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = cli.get_settings().model_copy(update={"cf_account_id": None, "cf_api_token": None})
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    result = run("--model", "bge-m3", "--root", str(EXAMPLE_ROOT))
+    assert result.exit_code == 2
+    assert "PROFILE_RAG_CF_ACCOUNT_ID" in result.output
+    assert "PROFILE_RAG_CF_API_TOKEN" in result.output
+
+
+def test_a_workers_ai_model_indexes_through_cloudflare(
+    cf_settings: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    fake = DeterministicFakeEmbedding(size=BGE_M3.dimensions)
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == f"Bearer {CF_TOKEN}"
+        texts = json.loads(request.content)["text"]
+        sent.extend(texts)
+        data = fake.embed_documents(texts)
+        return httpx.Response(200, json={"success": True, "result": {"data": data}})
+
+    cloudflare(monkeypatch, answer)
+    result = run("--model", "bge-m3", "--root", str(EXAMPLE_ROOT))
+    assert result.exit_code == 0, result.output
+    assert "created table chunks_bge_m3" in result.output
+    total = bge_rows(cf_settings)
+    assert total == len(sent) > 0
+    assert counts_line(result) == (
+        f"chunks_bge_m3: {total} chunks, {total} added, 0 updated, 0 skipped, 0 deleted"
+    )
+
+
+def test_a_cloudflare_400_stops_the_index_and_skips_nothing(
+    cf_settings: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def too_long(request: httpx.Request) -> httpx.Response:
+        error = {"code": 3010, "message": "Sequence too long: 9000 > 8192"}
+        return httpx.Response(400, json={"success": False, "errors": [error], "result": None})
+
+    cloudflare(monkeypatch, too_long)
+    result = run("--model", "bge-m3", "--root", str(EXAMPLE_ROOT))
+    assert result.exit_code == 2
+    assert "error: Workers AI @cf/baai/bge-m3, texts 0-" in result.output
+    assert "HTTP 400 (3010: Sequence too long: 9000 > 8192)" in result.output
+    assert "skipped" not in result.output
+    assert CF_TOKEN not in result.output
+    assert bge_rows(cf_settings) == 0

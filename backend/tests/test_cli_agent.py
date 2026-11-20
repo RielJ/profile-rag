@@ -96,8 +96,10 @@ def test_compare_agent_writes_the_detail_and_the_report(
     resolved = [ResolvedQuestion(question, (frozenset({"talks:v1:a"}),))]
     current = cli.get_settings()
 
-    def inputs(eval_set: str, model: object) -> tuple[list[ResolvedQuestion], int, str, str]:
-        return resolved, len(CHUNKS), str(current.database_url), current.ollama_url
+    def inputs(
+        eval_set: str, model: object
+    ) -> tuple[list[ResolvedQuestion], int, str, cli.Settings]:
+        return resolved, len(CHUNKS), str(current.database_url), current
 
     monkeypatch.setattr(cli, "_eval_inputs", inputs)
     monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path / "results")

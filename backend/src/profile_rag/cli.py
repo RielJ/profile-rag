@@ -127,7 +127,7 @@ from profile_rag.generation.chain import GroundedAnswer, build_chain
 from profile_rag.generation.pi_rpc import PiError, PiProcessError, PiTimeout
 from profile_rag.retrievers.factory import SearchMode, build_retriever, dense_candidates
 from profile_rag.settings import REPO_ROOT, Settings, TracingSettings, get_settings
-from profile_rag.vectorstore import hnsw, indexing, ollama_embeddings, store
+from profile_rag.vectorstore import embedders, hnsw, indexing, store
 from profile_rag.vectorstore.models import DEFAULT_MODEL, MODELS, EmbeddingModel
 from profile_rag.vectorstore.prefixed import EmbeddingError
 
@@ -535,12 +535,13 @@ def chunks_show(
 
 # --- index --------------------------------------------------------------------
 #
-# The Ollama parts go through vectorstore/ollama_embeddings.py; tests replace
-# its `ollama_digests` and `for_model` with fakes.
+# The embedding service (Ollama, or Workers AI for a model with a
+# `workers_ai_name`) is picked by vectorstore/embedders.py. Tests replace
+# `ollama_embeddings.ollama_digests` and `ollama_embeddings.for_model` with fakes.
 
 
-def _check_model(model: EmbeddingModel, base_url: str) -> None:
-    if problem := ollama_embeddings.model_problem(model, base_url):
+def _check_model(model: EmbeddingModel, settings: Settings) -> None:
+    if problem := embedders.model_problem(model, settings):
         _fail(problem)
 
 
@@ -572,7 +573,7 @@ def index_command(
         _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
     settings = get_settings()
     database_url = str(settings.database_url)
-    _check_model(model, settings.ollama_url)
+    _check_model(model, settings)
 
     root = root.expanduser().resolve()
     current = _load(root)
@@ -590,7 +591,7 @@ def index_command(
     for source_id in synced.deleted:
         typer.echo(f"  removed {source_id}")
 
-    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.connected(database_url) as engine:
         if not store.table_exists(database_url, model.table_name):
             store.create_table(engine, model, embeddings)
@@ -661,12 +662,12 @@ def search_command(
         _fail(f"unknown model {model_key!r}. Choose one of: {', '.join(MODELS)}.")
     settings = get_settings()
     database_url = str(settings.database_url)
-    _check_model(model, settings.ollama_url)
+    _check_model(model, settings)
     _require_table(database_url, model)
     _require_traceable(database_url, model)
 
     _warn_low_ef_search(ef_search, mode, k)
-    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.searching(database_url, model, embeddings, ef_search=ef_search) as search_store:
         try:
             retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
@@ -801,12 +802,12 @@ def _answer_setup(
     model = _model(model_key)
     settings = get_settings()
     database_url = str(settings.database_url)
-    _check_model(model, settings.ollama_url)
+    _check_model(model, settings)
     _require_table(database_url, model)
     _require_traceable(database_url, model)
 
     _warn_low_ef_search(ef_search, mode, k)
-    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.searching(database_url, model, embeddings, ef_search=ef_search) as search_store:
         yield build_retriever(mode, search_store, k, conninfo=database_url, model=model), settings
 
@@ -885,8 +886,8 @@ EVAL_DOCS_DIR = REPO_ROOT / "docs" / "eval"
 
 def _eval_inputs(
     eval_set: str, model: EmbeddingModel
-) -> tuple[list[ResolvedQuestion], int, str, str]:
-    """The resolved questions of a set, its chunk count, the database URL, and the Ollama URL.
+) -> tuple[list[ResolvedQuestion], int, str, Settings]:
+    """The resolved questions of a set, its chunk count, the database URL, and the settings.
 
     Exits with an error if the questions do not resolve, the model is not
     pulled, or the model's table does not hold exactly the set's corpus.
@@ -913,7 +914,7 @@ def _eval_inputs(
 
     settings = get_settings()
     database_url = str(settings.database_url)
-    _check_model(model, settings.ollama_url)
+    _check_model(model, settings)
     _require_table(database_url, model)
     _require_traceable(database_url, model)
     indexed = store.chunk_ids(database_url, model)
@@ -924,7 +925,7 @@ def _eval_inputs(
             f" {len(split - indexed)} chunks missing, {len(indexed - split)} extra."
             f" Run `just index {root.name} {model.key}` first."
         )
-    return resolution.questions, len(chunks), database_url, settings.ollama_url
+    return resolution.questions, len(chunks), database_url, settings
 
 
 @app.command("eval")
@@ -943,11 +944,11 @@ def eval_command(
 ) -> None:
     """Measure recall@k and MRR of a question set, and write the reports."""
     model = _model(model_key)
-    questions, chunk_count, database_url, ollama_url = _eval_inputs(eval_set, model)
+    questions, chunk_count, database_url, settings = _eval_inputs(eval_set, model)
 
     config = RunConfig(eval_set, model.key, mode, k, chunk_count, ef_search)
     _warn_low_ef_search(ef_search, mode, k)
-    embeddings = ollama_embeddings.for_model(model, ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.searching(database_url, model, embeddings, ef_search=ef_search) as search_store:
         retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
         try:
@@ -997,8 +998,7 @@ def compare_agent_command(
 ) -> None:
     """Answer a question set with the chain and the agent graph, and compare them."""
     model = _model(model_key)
-    questions, _chunk_count, database_url, ollama_url = _eval_inputs(eval_set, model)
-    settings = get_settings()
+    questions, _chunk_count, database_url, settings = _eval_inputs(eval_set, model)
     config = agent_compare.CompareConfig(
         eval_set, model.key, mode, k, settings.pi_model, max_pi_calls
     )
@@ -1015,7 +1015,7 @@ def compare_agent_command(
             f" ({result.agent.pi_calls}, rewrites {result.agent.rewrites})"
         )
 
-    embeddings = ollama_embeddings.for_model(model, ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.searching(database_url, model, embeddings) as search_store:
         retriever = build_retriever(mode, search_store, k, conninfo=database_url, model=model)
         pi = _pi_model(settings)
@@ -1116,7 +1116,7 @@ def hnsw_apply_command(
     _require_table(database_url, model)
     if ef_construction < 2 * m:
         _fail(f"--ef-construction must be at least 2 * --m ({2 * m}).")
-    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.searching(database_url, model, embeddings) as search_store:
         result = hnsw.apply_hnsw(
             search_store, model, conninfo=database_url, m=m, ef_construction=ef_construction
@@ -1132,7 +1132,7 @@ def hnsw_drop_command(model_key: ModelOption = DEFAULT_MODEL) -> None:
     database_url = str(settings.database_url)
     _require_table(database_url, model)
     existed = hnsw.hnsw_status(database_url, model) is not None
-    embeddings = ollama_embeddings.for_model(model, settings.ollama_url)
+    embeddings = embedders.for_model(model, settings)
     with store.searching(database_url, model, embeddings) as search_store:
         hnsw.drop_hnsw(search_store, model)
     action = "dropped" if existed else "absent"
@@ -1180,14 +1180,14 @@ def hnsw_compare_command(
     """Compare HNSW and exact dense results; write docs/eval/hnsw-<set>-<model>.md."""
     model = _model(model_key)
     ef_values = _ef_values(ef_search)
-    questions, _, database_url, ollama_url = _eval_inputs(eval_set, model)
+    questions, _, database_url, settings = _eval_inputs(eval_set, model)
     if hnsw.hnsw_status(database_url, model) is None:
         _fail(f"no HNSW index on {model.table_name}. Run `profile-rag hnsw apply` first.")
     try:
         comparison = ann_compare.run_ann_compare(
             database_url,
             model,
-            ollama_embeddings.for_model(model, ollama_url),
+            embedders.for_model(model, settings),
             questions,
             set_name=eval_set,
             chunks=len(store.chunk_ids(database_url, model)),

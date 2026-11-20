@@ -75,7 +75,8 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ANN"]
 # Pyrefly is the only type checker: `just typecheck` and the editor LSP both
 # run the version pinned above, so they report the same errors.
 [tool.pyrefly]
-project-includes = ["src", "tests"]
+# scripts: the Python scripts that export to and check the Worker (worker/).
+project-includes = ["src", "tests", "scripts"]
 # tests/ too, so test modules can import helpers such as tests/fake_pi.py.
 search-path = ["src", "tests"]
 preset = "strict"

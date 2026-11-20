@@ -82,9 +82,20 @@ class Settings(BaseSettings):
 
     # What computes the API's question embeddings: the local Ollama server, or
     # fastembed inside the process (vectorstore/fastembed_embeddings.py), for
-    # a deployed server without Ollama. Indexing always uses Ollama.
+    # a deployed server without Ollama. Indexing uses Ollama. A model with a
+    # `workers_ai_name` ignores this setting and indexing's Ollama: only
+    # Workers AI has its weights (vectorstore/embedders.py).
     embedder: Literal["ollama", "fastembed"] = Field(
         default="ollama", validation_alias="PROFILE_RAG_EMBEDDER"
+    )
+
+    # Cloudflare Workers AI, which embeds for the models that have a
+    # `workers_ai_name` (vectorstore/workers_ai_embeddings.py), in the CLI and
+    # the API. The token needs the "Workers AI: Read" permission. Ollama and
+    # fastembed models do not need either value.
+    cf_account_id: str | None = Field(default=None, validation_alias="PROFILE_RAG_CF_ACCOUNT_ID")
+    cf_api_token: SecretStr | None = Field(
+        default=None, validation_alias="PROFILE_RAG_CF_API_TOKEN"
     )
 
 

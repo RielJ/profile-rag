@@ -21,9 +21,9 @@ from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_postgres import PGEngine
 
 from profile_rag.vectorstore import store
-from profile_rag.vectorstore.models import EmbeddingModel
+from profile_rag.vectorstore.models import OllamaModel
 
-SMALL = EmbeddingModel(
+SMALL = OllamaModel(
     key="small-8",
     ollama_tag="small:8",
     digest="0" * 64,

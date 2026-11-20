@@ -11,11 +11,11 @@ import math
 import pytest
 from langchain_core.embeddings import Embeddings
 
-from profile_rag.vectorstore.models import NOMIC_V15, QWEN3_06B, EmbeddingModel
+from profile_rag.vectorstore.models import NOMIC_V15, QWEN3_06B, EmbeddingModel, OllamaModel
 from profile_rag.vectorstore.prefixed import EmbeddingError, PrefixedEmbeddings
 
 # A small model, so the fake's vectors stay short and readable.
-TINY = EmbeddingModel(
+TINY = OllamaModel(
     key="tiny",
     ollama_tag="tiny:1",
     digest="0" * 64,
@@ -216,7 +216,7 @@ def test_embedding_error_is_a_value_error() -> None:
 
 
 @pytest.mark.parametrize("model", [NOMIC_V15, QWEN3_06B], ids=lambda m: m.key)
-def test_each_model_entry_is_complete(model: EmbeddingModel) -> None:
+def test_each_model_entry_is_complete(model: OllamaModel) -> None:
     assert ":" in model.ollama_tag  # an explicit tag, never an implicit :latest
     assert len(model.digest) == 64
     assert all(c in "0123456789abcdef" for c in model.digest)

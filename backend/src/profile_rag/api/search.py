@@ -6,10 +6,12 @@ search store of the configured embedding model, and returns a
 raises `SearchSetupError`, and the server does not start:
 
 - `PROFILE_RAG_API_MODEL` must name a model in vectorstore/models.py.
-- The embedder must be able to run that model: with
-  `PROFILE_RAG_EMBEDDER=ollama` (the default), Ollama must have it with the
-  digest models.py expects; with `fastembed`, models.py must name its
-  fastembed weights, which are loaded at startup.
+- The embedder must be able to run that model (vectorstore/embedders.py):
+  with `PROFILE_RAG_EMBEDDER=ollama` (the default), Ollama must have it with
+  the digest models.py expects; with `fastembed`, models.py must name its
+  fastembed weights, which are loaded at startup. A Workers AI model ignores
+  `PROFILE_RAG_EMBEDDER` and needs `PROFILE_RAG_CF_ACCOUNT_ID` and
+  `PROFILE_RAG_CF_API_TOKEN`.
 - The model's chunk table must exist.
 - With tracing on, the table must hold exactly the chunks of
   corpus-example/ (as cli.py's `_require_traceable`), because traces may
@@ -33,7 +35,7 @@ from profile_rag.generation import chat_models
 from profile_rag.rag import ChainCache
 from profile_rag.retrievers.factory import SearchMode, build_retriever
 from profile_rag.settings import Settings
-from profile_rag.vectorstore import fastembed_embeddings, ollama_embeddings, store
+from profile_rag.vectorstore import embedders, store
 from profile_rag.vectorstore.models import MODELS, EmbeddingModel
 
 
@@ -89,19 +91,11 @@ def open_chains(settings: Settings) -> OpenChains:
 
 
 def _embedder_problem(settings: Settings, model: EmbeddingModel) -> str | None:
-    match settings.embedder:
-        case "ollama":
-            return ollama_embeddings.model_problem(model, settings.ollama_url)
-        case "fastembed":
-            return fastembed_embeddings.model_problem(model)
+    return embedders.model_problem(model, settings, local=settings.embedder)
 
 
 def _embeddings(settings: Settings, model: EmbeddingModel) -> Embeddings:
-    match settings.embedder:
-        case "ollama":
-            return ollama_embeddings.for_model(model, settings.ollama_url)
-        case "fastembed":
-            return fastembed_embeddings.for_model(model)
+    return embedders.for_model(model, settings, local=settings.embedder)
 
 
 def _check_example_table(database_url: str, model: EmbeddingModel) -> None:

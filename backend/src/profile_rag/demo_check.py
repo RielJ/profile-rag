@@ -14,7 +14,8 @@ The checks:
   database port may be taken by this project's own database container
   (`--db-running`), so a second `just demo` works.
 - Ollama answers at `OLLAMA_URL` and has the embedding model, with the digest
-  that vectorstore/models.py expects.
+  that vectorstore/models.py expects. For a Workers AI model, the Cloudflare
+  account ID and API token are set instead (not called).
 - Pi (`PROFILE_RAG_PI_BIN`) is on PATH or is an executable file. Whether Pi has
   credentials for the model's provider is only known at the first question.
 - The corpus has `sources.yaml` with at least one approved source, and no
@@ -40,8 +41,8 @@ from pydantic import ValidationError
 from profile_rag.corpus import registry
 from profile_rag.corpus.registry import REGISTRY_FILENAME, RegistryError
 from profile_rag.settings import Settings, get_settings
-from profile_rag.vectorstore import ollama_embeddings
-from profile_rag.vectorstore.models import MODELS, EmbeddingModel
+from profile_rag.vectorstore import ollama_embeddings, workers_ai_embeddings
+from profile_rag.vectorstore.models import MODELS, EmbeddingModel, OllamaModel, WorkersAIModel
 from profile_rag.vectorstore.ollama_embeddings import DigestLister
 
 PortProbe = Callable[[int], bool]
@@ -102,10 +103,23 @@ def check_ports(ports: Ports, in_use: PortProbe = port_in_use) -> list[str]:
 
 
 def check_ollama(
-    model: EmbeddingModel, base_url: str, list_digests: DigestLister | None = None
+    model: OllamaModel, base_url: str, list_digests: DigestLister | None = None
 ) -> list[str]:
     problem = ollama_embeddings.model_problem(model, base_url, list_digests)
     return [problem] if problem else []
+
+
+def check_embedder(
+    model: EmbeddingModel, settings: Settings, list_digests: DigestLister | None = None
+) -> list[str]:
+    match model:
+        case OllamaModel():
+            return check_ollama(model, settings.ollama_url, list_digests)
+        case WorkersAIModel():
+            problem = workers_ai_embeddings.model_problem(
+                model, settings.cf_account_id, settings.cf_api_token
+            )
+            return [problem] if problem else []
 
 
 def check_pi(pi_bin: str) -> list[str]:
@@ -160,7 +174,7 @@ def run_checks(
     return [
         *check_database_url(settings, ports.db),
         *check_ports(ports, in_use),
-        *check_ollama(model, settings.ollama_url, list_digests),
+        *check_embedder(model, settings, list_digests),
         *check_pi(settings.pi_bin),
         *check_corpus(root),
     ]

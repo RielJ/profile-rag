@@ -27,7 +27,7 @@ import ollama
 from langchain_core.embeddings import Embeddings
 from langchain_ollama import OllamaEmbeddings
 
-from profile_rag.vectorstore.models import EmbeddingModel
+from profile_rag.vectorstore.models import OllamaModel
 from profile_rag.vectorstore.prefixed import PrefixedEmbeddings
 
 DigestLister = Callable[[str], dict[str, str]]
@@ -51,7 +51,7 @@ def ollama_digests(base_url: str) -> dict[str, str]:
 
 
 def model_problem(
-    model: EmbeddingModel, base_url: str, list_digests: DigestLister | None = None
+    model: OllamaModel, base_url: str, list_digests: DigestLister | None = None
 ) -> str | None:
     """What stops `model` from being used through Ollama at `base_url`, or None."""
     lister = list_digests or ollama_digests
@@ -77,6 +77,6 @@ def model_problem(
     return None
 
 
-def for_model(model: EmbeddingModel, base_url: str) -> Embeddings:
+def for_model(model: OllamaModel, base_url: str) -> Embeddings:
     """The embeddings of `model` through Ollama at `base_url`, with its prefixes."""
     return PrefixedEmbeddings(OllamaEmbeddings(model=model.ollama_tag, base_url=base_url), model)

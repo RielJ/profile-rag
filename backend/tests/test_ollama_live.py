@@ -17,21 +17,23 @@ import pytest
 from langchain_ollama import OllamaEmbeddings
 
 from profile_rag.settings import get_settings
-from profile_rag.vectorstore.models import MODELS, EmbeddingModel
+from profile_rag.vectorstore.models import MODELS, OllamaModel
 
 pytestmark = pytest.mark.live
 
+OLLAMA_MODELS = [model for model in MODELS.values() if isinstance(model, OllamaModel)]
 
-@pytest.mark.parametrize("model", list(MODELS.values()), ids=lambda m: m.key)
-def test_the_pulled_model_has_the_expected_digest(model: EmbeddingModel) -> None:
+
+@pytest.mark.parametrize("model", OLLAMA_MODELS, ids=lambda m: m.key)
+def test_the_pulled_model_has_the_expected_digest(model: OllamaModel) -> None:
     listed = ollama.Client(host=get_settings().ollama_url).list()
     digests = {entry.model: (entry.digest or "").removeprefix("sha256:") for entry in listed.models}
     assert model.ollama_tag in digests, f"run `ollama pull {model.ollama_tag}`"
     assert digests[model.ollama_tag] == model.digest
 
 
-@pytest.mark.parametrize("model", list(MODELS.values()), ids=lambda m: m.key)
-def test_one_embedding_has_the_expected_dimensions(model: EmbeddingModel) -> None:
+@pytest.mark.parametrize("model", OLLAMA_MODELS, ids=lambda m: m.key)
+def test_one_embedding_has_the_expected_dimensions(model: OllamaModel) -> None:
     embeddings = OllamaEmbeddings(model=model.ollama_tag, base_url=get_settings().ollama_url)
     vector = embeddings.embed_query(model.query_prefix + "Who is Dana Whitlock?")
     assert len(vector) == model.dimensions

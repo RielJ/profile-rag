@@ -16,9 +16,9 @@ from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
 from langchain_postgres import PGEngine, PGVectorStore
 
 from profile_rag.vectorstore import indexing, store
-from profile_rag.vectorstore.models import EmbeddingModel
+from profile_rag.vectorstore.models import EmbeddingModel, OllamaModel
 
-SMALL = EmbeddingModel(
+SMALL = OllamaModel(
     key="small-8",
     ollama_tag="small:8",
     digest="0" * 64,
@@ -28,7 +28,7 @@ SMALL = EmbeddingModel(
     query_prefix="",
     max_words=1000,
 )
-OTHER = EmbeddingModel(
+OTHER = OllamaModel(
     key="other-8",
     ollama_tag="other:8",
     digest="1" * 64,

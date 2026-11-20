@@ -26,12 +26,12 @@ from langchain_postgres import PGEngine, PGVectorStore
 from profile_rag.retrievers.dense import VISIBLE, dense_retriever, mmr_retriever
 from profile_rag.retrievers.hybrid import RRF_K, HybridRetriever, reciprocal_rank_fusion
 from profile_rag.retrievers.keyword import allowed_values, keyword_search, or_query
-from profile_rag.vectorstore.models import EmbeddingModel
+from profile_rag.vectorstore.models import EmbeddingModel, OllamaModel
 from profile_rag.vectorstore.store import TABLE_NAMES, open_search_store
 
 # Keyword search only reads tables in TABLE_NAMES, so this test model borrows
 # a real table name. The database is a throwaway, so the name is free.
-SMALL = EmbeddingModel(
+SMALL = OllamaModel(
     key="small-8",
     ollama_tag="small:8",
     digest="0" * 64,

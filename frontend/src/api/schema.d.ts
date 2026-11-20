@@ -197,7 +197,7 @@ export interface components {
              * Error
              * @enum {string}
              */
-            error: "retrieval_failed" | "pi_timeout" | "pi_failed" | "bad_reply" | "invented_citation" | "internal_error";
+            error: "retrieval_failed" | "pi_timeout" | "pi_failed" | "bad_reply" | "invented_citation" | "internal_error" | "rate_limited";
             /** Message */
             message: string;
             /** Request Id */
@@ -350,6 +350,13 @@ export interface operations {
                     "application/json": components["schemas"]["AskResponse"];
                 };
             };
+            /** @description PROFILE_RAG_ACCESS_KEY is set and X-Access-Key does not match it. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -357,6 +364,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The question could not be answered. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailedResponse"];
                 };
             };
             /** @description The question could not be answered. */
@@ -419,6 +435,13 @@ export interface operations {
                     "application/x-ndjson": components["schemas"]["AskStreamEvent"];
                 };
             };
+            /** @description PROFILE_RAG_ACCESS_KEY is set and X-Access-Key does not match it. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -426,6 +449,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The question could not be answered. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": components["schemas"]["FailedResponse"];
                 };
             };
         };

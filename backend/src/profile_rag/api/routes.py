@@ -7,12 +7,16 @@ Status codes of `POST /api/ask` (docs/ARCHITECTURE.md, "API"):
 - 5xx: `failed`, with the code in `FAILED_STATUS`. The body is still the
   `FailedResponse` variant of `AskResponse`.
 - 422: the request body is invalid (FastAPI's validation error body).
+- 401 and 429: the question was refused (api/access.py): a wrong access
+  key, or over a question limit. A 429 body is the `FailedResponse` with
+  the code `rate_limited`.
 
 Every `POST /api/ask` response carries an `X-Request-ID` header. A failed
 response repeats it in `request_id`, and the server log line for the failure
 names it.
 
-`POST /api/ask/stream` always answers 200 once the request is valid: a
+`POST /api/ask/stream` always answers 200 once the request is valid and
+accepted (401 and 429 come before the stream, as for `POST /api/ask`): a
 failure arrives as the `failed` response in the last line, because the
 status line is sent before the answer exists. The request ID is in the
 `X-Request-ID` header, as for `POST /api/ask`.
@@ -39,6 +43,7 @@ from psycopg.rows import dict_row
 
 from profile_rag import rag
 from profile_rag.api import health
+from profile_rag.api.access import QuestionGuard
 from profile_rag.api.deps import ChainsDep, PoolDep
 from profile_rag.api.models import (
     AskRequest,
@@ -66,16 +71,28 @@ FAILED_STATUS: dict[FailedCode, int] = {
     "bad_reply": status.HTTP_502_BAD_GATEWAY,
     "invented_citation": status.HTTP_502_BAD_GATEWAY,
     "internal_error": status.HTTP_500_INTERNAL_SERVER_ERROR,
+    "rate_limited": status.HTTP_429_TOO_MANY_REQUESTS,
 }
 
 _FAILED_DOC: dict[int | str, dict[str, Any]] = {
     code: {"model": FailedResponse, "description": "The question could not be answered."}
     for code in sorted(set(FAILED_STATUS.values()))
 }
+_FAILED_DOC[status.HTTP_401_UNAUTHORIZED] = {
+    "description": "PROFILE_RAG_ACCESS_KEY is set and X-Access-Key does not match it."
+}
+
+# Before a stream starts, a refused question gets the same 401 or 429 as `POST /api/ask`.
+_REFUSED_DOC: dict[int | str, dict[str, Any]] = {
+    status.HTTP_401_UNAUTHORIZED: _FAILED_DOC[status.HTTP_401_UNAUTHORIZED],
+    status.HTTP_429_TOO_MANY_REQUESTS: _FAILED_DOC[status.HTTP_429_TOO_MANY_REQUESTS],
+}
 
 
 @router.post("/ask", tags=["ask"], response_model=AskResponse, responses=_FAILED_DOC)
-def ask(body: AskRequest, chains: ChainsDep, response: Response) -> AskResponse:
+def ask(
+    body: AskRequest, chains: ChainsDep, response: Response, _guard: QuestionGuard
+) -> AskResponse:
     """Answer a question from the indexed evidence, with citations."""
     request_id = uuid.uuid4().hex
     response.headers["X-Request-ID"] = request_id
@@ -95,12 +112,13 @@ _STREAM_DOC: dict[int | str, dict[str, Any]] = {
     200: {
         "model": AskStreamEvent,
         "description": "Newline-delimited JSON: `draft` events, then one `result` event.",
-    }
+    },
+    **_REFUSED_DOC,
 }
 
 
 @router.post("/ask/stream", tags=["ask"], response_class=NDJSONResponse, responses=_STREAM_DOC)
-async def ask_stream(body: AskRequest, chains: ChainsDep) -> NDJSONResponse:
+async def ask_stream(body: AskRequest, chains: ChainsDep, _guard: QuestionGuard) -> NDJSONResponse:
     """Answer a question as `POST /api/ask` does, streaming the draft answer first."""
     request_id = uuid.uuid4().hex
     chain = chains.get(body.mode, body.k)

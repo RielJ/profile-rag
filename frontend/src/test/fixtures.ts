@@ -1,5 +1,5 @@
 // Response bodies for the unit tests. Typed with the generated API types, so
-// a schema change that breaks them fails `make typecheck`.
+// a schema change that breaks them fails `just typecheck`.
 
 import type {
   AnsweredResponse,
@@ -61,6 +61,7 @@ export const FAILED_STATUS: Record<FailedCode, number> = {
   bad_reply: 502,
   invented_citation: 502,
   internal_error: 500,
+  rate_limited: 429,
 };
 
 export function failed(error: FailedCode): FailedResponse {

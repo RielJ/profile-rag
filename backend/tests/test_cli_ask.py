@@ -208,8 +208,13 @@ def chain_raising(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
 
 
 def test_every_chain_failure_but_internal_error_has_an_exit_code() -> None:
-    """A new FailedCode must get an exit code, the way the API gives it a status."""
-    assert set(cli.ANSWER_EXIT) == set(get_args(FailedCode)) - {"internal_error"}
+    """A new FailedCode must get an exit code, the way the API gives it a status.
+
+    `rate_limited` comes from the API's question guard (api/access.py), never
+    from the chain, so the CLI cannot meet it.
+    """
+    api_only = {"internal_error", "rate_limited"}
+    assert set(cli.ANSWER_EXIT) == set(get_args(FailedCode)) - api_only
 
 
 @pytest.mark.usefixtures("table")

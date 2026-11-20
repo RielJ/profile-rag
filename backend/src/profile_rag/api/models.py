@@ -1,7 +1,7 @@
 """Request and response models of the public API.
 
 These classes are the API contract. FastAPI turns them into the OpenAPI
-schema (`/openapi.json`), and `make types` turns that schema into the
+schema (`/openapi.json`), and `just types` turns that schema into the
 frontend's TypeScript types (frontend/src/api/schema.d.ts). Every model
 forbids unknown fields.
 
@@ -112,6 +112,7 @@ FailedCode = Literal[
     "bad_reply",
     "invented_citation",
     "internal_error",
+    "rate_limited",
 ]
 
 

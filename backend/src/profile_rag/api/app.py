@@ -11,14 +11,17 @@ start.
 """
 
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-from profile_rag import tracing
-from profile_rag.api import routes
+from profile_rag import rag, tracing
+from profile_rag.api import access, routes
 from profile_rag.api.log_config import configure_logging
+from profile_rag.api.models import FailedResponse
 from profile_rag.api.search import open_chains
 from profile_rag.db.pool import create_pool
 from profile_rag.settings import TracingSettings, get_settings
@@ -57,7 +60,24 @@ def create_app(app_lifespan: Lifespan = lifespan) -> FastAPI:
         lifespan=app_lifespan,
     )
     app.include_router(routes.router, prefix="/api")
+    app.add_exception_handler(access.RateLimited, _rate_limited)
     return app
+
+
+async def _rate_limited(request: Request, error: Exception) -> JSONResponse:
+    """A question over a limit (api/access.py): 429 with a `rate_limited` failure."""
+    request_id = uuid.uuid4().hex
+    body = FailedResponse(
+        status="failed",
+        error="rate_limited",
+        message=rag.FAILURES["rate_limited"],
+        request_id=request_id,
+    )
+    return JSONResponse(
+        body.model_dump(),
+        status_code=routes.FAILED_STATUS["rate_limited"],
+        headers={"X-Request-ID": request_id},
+    )
 
 
 app = create_app()

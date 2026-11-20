@@ -42,7 +42,7 @@ went in together:
 1. Splitter v2. Each chunk's text starts with its heading path, joined by
    ` > `, then a blank line, then the body. Before (v1), headings were
    metadata only, so job titles and company names were invisible to both
-   searches. Chunk IDs changed (`:v1:` to `:v2:`); `make index` replaced
+   searches. Chunk IDs changed (`:v1:` to `:v2:`); `just index` replaced
    all 15 rows per table (15 added, 15 deleted).
 2. Keyword search (hybrid mode only). `PGVectorStore` 0.0.19 builds its
    keyword query with `plainto_tsquery`, which ANDs every question word,
